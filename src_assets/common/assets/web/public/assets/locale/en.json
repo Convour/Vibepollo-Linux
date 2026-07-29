@@ -1937,6 +1937,7 @@
     "limitLabel": "FPS limit override",
     "limitHint": "Optional global FPS limit for NVIDIA or RTSS. RTSS supports decimals; NVIDIA rounds to a whole FPS. Set to 0 to use the client display override or requested stream FPS.",
     "limitPlaceholder": "0",
+    "linuxNotice": "On Linux, frame limiting is applied via MangoHud (FPS cap) and NVIDIA driver environment variables (VSYNC) instead of RTSS, so only Auto and NVIDIA driver are offered here. There's no live status check yet, so this panel can't confirm detection the way it does on Windows.",
     "autoVirtualFramegenLabel": "Smoother capture for virtual displays",
     "autoVirtualFramegenHint": "Enabled uses 4× refresh while a game is active and 1× on the desktop. Stream FPS stays the same, so overall performance should not be affected; games with uneven frame pacing can capture much more smoothly. Disabled turns off these automatic adjustments and the virtual-display limiter. Legacy uses a fixed 2× refresh for the entire stream.",
     "provider": {

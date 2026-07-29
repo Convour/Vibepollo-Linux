@@ -13,6 +13,12 @@ const store = useConfigStore();
 const config = store.config;
 const dummyPlugHdrActive = computed(() => !!config.dd_wa_dummy_plug_hdr10);
 
+// RTSS and the NVIDIA Control Panel integration are Windows-only (see src/platform/windows/
+// rtss_integration.cpp, frame_limiter_nvcp.cpp); /api/rtss/status doesn't exist on other
+// platforms. Linux instead applies frame_limiter_provider via MangoHud/NVIDIA env vars
+// (src/platform/linux/frame_limiter.cpp) with no live status probe yet.
+const isWindows = computed(() => config.platform === 'windows');
+
 // Mirror the virtual-display detection used in DisplayDeviceOptions so the capture-mode copy
 // appears only when a virtual screen is selected.
 const VIRTUAL_DISPLAY_SELECTION = 'sunshine:virtual_display';
@@ -129,7 +135,9 @@ const providerLabelFor = (id: string) => {
 
 const providerOptions = computed(() => [
   { label: providerLabelFor('auto'), value: 'auto' },
-  { label: providerLabelFor('rtss'), value: 'rtss' },
+  // RTSS has no Linux equivalent (src/platform/linux/frame_limiter.cpp treats it identically
+  // to "auto"), so don't offer it as if it were a distinct choice outside Windows.
+  ...(isWindows.value ? [{ label: providerLabelFor('rtss'), value: 'rtss' }] : []),
   { label: providerLabelFor('nvidia-control-panel'), value: 'nvidia-control-panel' },
 ]);
 
@@ -225,6 +233,7 @@ const rtssAutoLaunchPlanned = computed(() => {
 });
 
 const shouldShowRtssConfig = computed(() => {
+  if (!isWindows.value) return false;
   const provider = frameLimiterProvider.value;
   return provider === 'rtss' || provider === 'auto';
 });
@@ -240,6 +249,7 @@ const showRtssInstallInput = computed(
 );
 
 const showSyncLimiterSelect = computed(() => {
+  if (!isWindows.value) return false;
   const provider = frameLimiterProvider.value;
   if (provider === 'rtss') {
     return true;
@@ -333,6 +343,8 @@ watch(frameLimiterEnabled, () => {
 });
 
 async function refreshStatus() {
+  // /api/rtss/status is Windows-only (src/confighttp_rtss.cpp); no Linux equivalent exists yet.
+  if (!isWindows.value) return;
   if (loading.value) return;
   loading.value = true;
   statusError.value = undefined;
@@ -386,6 +398,13 @@ onMounted(() => {
     </div>
 
     <div class="space-y-4">
+      <div
+        v-if="!isWindows"
+        class="rounded-lg border border-primary/30 bg-primary/10 px-4 py-3 text-[12px]"
+      >
+        <div class="opacity-80">{{ t('frameLimiter.linuxNotice') }}</div>
+      </div>
+
       <div
         v-if="status || statusError"
         :class="['rounded-lg px-4 py-3 text-[12px]', statusBadgeClass]"

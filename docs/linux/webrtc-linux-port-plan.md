@@ -1,13 +1,14 @@
 # WebRTC browser streaming on Linux — scoping notes (2026-07-29, updated 2026-07-29)
 
-**Status: milestone 1 (does `libwebrtc` build for Linux at all) is now answered — yes, with two
-small fixes.** This started as a first-pass investigation into what porting `/webrtc` browser
-streaming to Linux would actually take, done after discovering the running dev service returns
-`Error: WebRTC: support is disabled at build time` (`src/webrtc_stream.cpp`) whenever a browser
-client posts an SDP offer, because `SUNSHINE_ENABLE_WEBRTC` is Windows-only and off by default
-(`cmake/prep/options.cmake:20`). The plan below was originally written before anything had been
-built or run; §1 now includes a completed trial build with real results. Not yet wired into CMake
-or this fork's actual build — see "Rough milestone plan" for what's left.
+**Status: milestones 1 and 2 done.** `libwebrtc` builds clean for Linux, the CMake wiring finds
+and links it, and `src/webrtc_stream.cpp` compiles with `SUNSHINE_ENABLE_WEBRTC=1` on GCC/Linux
+with zero changes needed to that file. This started as a first-pass investigation into what
+porting `/webrtc` browser streaming to Linux would actually take, done after discovering the
+running dev service returns `Error: WebRTC: support is disabled at build time`
+(`src/webrtc_stream.cpp`) whenever a browser client posts an SDP offer, because
+`SUNSHINE_ENABLE_WEBRTC` is Windows-only and off by default (`cmake/prep/options.cmake:20`). What
+remains is frame delivery (milestone 3) and an actual browser smoke test (milestone 4) — see
+"Rough milestone plan".
 
 **Headline finding: this is smaller than it looks at first glance.** `src/webrtc_stream.cpp` is
 ~5,940 lines and greps for D3D11/DXGI/COM look alarming, but the file already gates every
@@ -102,6 +103,52 @@ ffmpeg_branding="Chrome" is_component_build=false use_rtti=true rtc_enable_proto
 (`is_debug=false`), 32-bit/arm targets, or size/perf comparison against the Windows DLL — this
 trial only proves the debug x64 shared object links and exports the expected symbols.
 
+## 1b. CMake wiring and a real compile test (2026-07-29)
+
+`scripts/build_linux_webrtc.sh` now exists — a from-scratch bash port of
+`build_mingw_webrtc.ps1` baking in both fixes from §1 (drops `use_custom_libcxx=false`; sed-trims
+the 3 dead constants in a fresh copy of the wrapper, hard-failing if the patterns stop matching so
+this doesn't silently regress into a confusing `-Werror` failure later). **This script itself has
+not been run end-to-end** — only its individual steps were verified by hand during the trial
+build in §1 and the CMake test below, which reused those trial artifacts rather than re-running a
+multi-hour sync/build. `cmake/dependencies/linux.cmake` now has the same
+`if(SUNSHINE_ENABLE_WEBRTC) include(webrtc.cmake) endif()` block `windows.cmake` already had, and
+`webrtc.cmake`'s default `WEBRTC_ROOT` resolution grew a Linux-parity fallback
+(`~/.cache/vibeshine/deps`, XDG-aware) matching the Windows `%LOCALAPPDATA%` default.
+
+**Found and fixed a real, pre-existing bug in `webrtc.cmake` while verifying this** (affects the
+Windows path too, not just this Linux addition): `WEBRTC_LIBRARY`/`WEBRTC_INCLUDE_DIR` were
+pre-declared as empty-default `CACHE` variables *before* the `find_path()`/`find_library()` calls
+that were supposed to populate them. Confirmed via a minimal repro
+(`set(FOO "" CACHE PATH "x")` followed by `find_path(FOO NAMES stdio.h PATHS /usr/include)`
+leaves `FOO` empty on CMake 4.4.1) that CMake treats any pre-existing cache entry for a find-target
+variable as already-resolved — even an empty one — and skips the real search. This made the
+`WEBRTC_ROOT` auto-discovery path silently resolve to nothing on every configure, regardless of
+platform. Fix: stopped pre-declaring those two cache entries; `find_path`/`find_library` create
+them (with a real search) the first time either is genuinely undefined. Verified both directions
+still work: auto-discovery with no `-D` flags at all, and explicit
+`-DWEBRTC_INCLUDE_DIR=... -DWEBRTC_LIBRARY=...` overrides still short-circuit the whole block as
+before.
+
+**Verified the fix against the real project, not just an isolated harness**: staged the §1 trial's
+`libwebrtc.so` + wrapper headers at the Linux default cache location, then ran a full
+`cmake -B ... -DSUNSHINE_ENABLE_WEBRTC=ON` configure of this repo (unrelated blocker hit and
+worked around: `glad.cmake`'s pip install fails under Arch's PEP 668 externally-managed-Python
+restriction — pre-existing, orthogonal to WebRTC, has its own escape hatch already in the codebase,
+`-DGLAD_SKIP_PIP_INSTALL=ON -DPython_EXECUTABLE=<venv with jinja2>`). Configure succeeded;
+`CMakeCache.txt` shows `WEBRTC_LIBRARY` resolved to the real `.so` path. Then went one step
+further and actually built `CMakeFiles/sunshine.dir/src/webrtc_stream.cpp.o` with
+`SUNSHINE_ENABLE_WEBRTC=1` defined — **compiled with zero errors**. This is real evidence, not
+just a read of the source: no `#ifdef` branch in that ~5,940-line file had ever been compiled by
+anything other than MSVC before this.
+
+**Known gap, not yet addressed**: `libwebrtc.so` has no runtime story on Linux yet. The build
+script copies it next to the CMake binary dir the way the Windows script copies the DLL, but
+Linux's dynamic linker doesn't search next to the executable the way Windows DLL loading does —
+the `sunshine` CMake target needs an `$ORIGIN`-relative RPATH (or an install step putting the
+`.so` somewhere already on the loader's search path) before a built binary can actually load it at
+runtime. Not wired in yet; needed before milestone 4's smoke test.
+
 ## 2. What in `webrtc_stream.cpp` is actually Windows-only
 
 Audited all ~25 `#ifdef _WIN32` blocks in the file. They fall into two buckets:
@@ -153,26 +200,25 @@ and pick up real wiring later as the virtual-display and RTSS Linux ports land i
 
 ## 3. Rough milestone plan
 
-1. ~~**Prove the dependency builds.**~~ **Done 2026-07-29** — see trial build results above.
-   `libwebrtc.so` builds clean for Linux x64 debug with two small fixes (a `gn` arg removal, a
-   3-line dead-code trim in the wrapper's own source). No upstream webrtc patching needed.
-2. **Wire the build.** `scripts/build_linux_webrtc.sh` (new, analogous to
-   `build_mingw_webrtc.ps1` but simpler — no MSVC toolchain patching), plus an
-   `if(SUNSHINE_ENABLE_WEBRTC) include(...webrtc.cmake) endif()` block added to
-   `cmake/dependencies/linux.cmake` so the existing non-`WIN32` `find_library` branch in
-   `webrtc.cmake` actually gets reached. The script needs to bake in both fixes from the trial:
-   drop `use_custom_libcxx=false` from the `gn gen` args, and carry a small patch (or upstream PR)
-   for the 3 unused constants in `passthrough_video_encoder.cc` since that file lives in the pinned
-   submodule, not something this fork can edit in place without patching.
+1. ~~**Prove the dependency builds.**~~ **Done 2026-07-29** — see §1. `libwebrtc.so` builds clean
+   for Linux x64 debug with two small fixes (a `gn` arg removal, a 3-line dead-code trim in the
+   wrapper's own source). No upstream webrtc patching needed.
+2. ~~**Wire the build.**~~ **Done 2026-07-29** — see §1b. `scripts/build_linux_webrtc.sh` written
+   (not yet run end-to-end as a whole script), `linux.cmake`/`webrtc.cmake` wired and verified
+   against a real project configure + a real compile of `webrtc_stream.cpp` with
+   `SUNSHINE_ENABLE_WEBRTC=1`. Found and fixed a pre-existing `webrtc.cmake` caching bug along the
+   way that affected the Windows path too. Runtime linking (`$ORIGIN` RPATH) is still unresolved —
+   carried forward into milestone 4.
 3. **Frame delivery.** New `#ifdef __linux__` branch in `webrtc_stream.cpp` mirroring
    `try_push_nv12_frame`, sourcing from the existing `graphics.cpp` NV12 pipeline. This is the
    only genuinely new C++ logic the port needs.
 4. **End-to-end smoke test.** `SUNSHINE_ENABLE_WEBRTC=ON` build, real browser session against
    `/webrtc`, verify signaling/ICE/SDP negotiation (already cross-platform) actually gets frames
-   on screen. Bucket B items stay `#ifdef _WIN32`-only / no-op on Linux at this stage.
+   on screen. Needs the RPATH/runtime-linking gap from §1b resolved first. Bucket B items stay
+   `#ifdef _WIN32`-only / no-op on Linux at this stage.
 5. **Opportunistic follow-up**, not blocking: once virtual-display and RTSS Linux ports land
    independently, revisit Bucket B call sites to wire them in for WebRTC sessions too.
 
-Steps 1–2 are almost pure unknowns until tried; steps 3–4 are where estimate confidence is highest
-given how contained the actual gap turned out to be. No code has been touched for this yet —
-this file is the map, not the work.
+Steps 1–2 turned out to be the two biggest unknowns, and both are now resolved with working
+recipes; step 3 (the NV12 GPU→host readback) is next and is where the remaining size/complexity
+uncertainty actually lives now.

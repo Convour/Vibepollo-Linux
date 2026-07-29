@@ -35,10 +35,10 @@ end-user outcome. Status reflects live verification on real hardware, not just c
   confirmed live; the revert path (`terminate()` → `revert_session_display`) is implemented but not
   yet exercised against a real EDID-injected output.
 * **WebRTC browser streaming (`/webrtc`).** 🔴 Not functional on Linux yet —
-  `SUNSHINE_ENABLE_WEBRTC` is Windows-only by default. The `libwebrtc` dependency now proven to
-  build clean for Linux (`docs/linux/webrtc-linux-port-plan.md`, trial build 2026-07-29); still
-  needs CMake wiring and the one new Linux frame-delivery function before a session can run
-  end-to-end.
+  `SUNSHINE_ENABLE_WEBRTC` is Windows-only by default. `libwebrtc` builds clean for Linux, CMake
+  wiring is in place, and `src/webrtc_stream.cpp` compiles as-is with `SUNSHINE_ENABLE_WEBRTC=1`
+  (`docs/linux/webrtc-linux-port-plan.md`); still needs runtime linking (`$ORIGIN` RPATH), the one
+  new Linux frame-delivery function, and an actual browser session test before this is real.
 
 ## What is Vibepollo?
 

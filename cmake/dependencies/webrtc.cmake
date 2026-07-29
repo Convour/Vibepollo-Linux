@@ -1,4 +1,4 @@
-# libwebrtc dependency (Windows only)
+# libwebrtc dependency (Windows and Linux)
 
 if(NOT SUNSHINE_ENABLE_WEBRTC)
     return()
@@ -8,15 +8,22 @@ endif()
 # build is not coupled to any one CMake build directory. Priority:
 #   1. Explicit -DWEBRTC_ROOT=...        (user override)
 #   2. $ENV{VIBESHINE_DEPS_DIR}/libwebrtc/out
-#   3. $ENV{LOCALAPPDATA}/Vibeshine/deps/libwebrtc/out  (Windows default)
-#   4. ${CMAKE_BINARY_DIR}/libwebrtc                    (legacy fallback)
-# build_mingw_webrtc.ps1 uses the same defaults so a single rebuild populates
-# the location every sunshine build dir / worktree on this machine sees.
+#   3. $ENV{LOCALAPPDATA}/Vibeshine/deps/libwebrtc/out       (Windows default)
+#   4. $ENV{XDG_CACHE_HOME}/vibeshine/deps/libwebrtc/out,
+#      or ~/.cache/vibeshine/deps/libwebrtc/out              (Linux/BSD default)
+#   5. ${CMAKE_BINARY_DIR}/libwebrtc                         (legacy fallback)
+# build_mingw_webrtc.ps1 / build_linux_webrtc.sh use the same defaults so a
+# single rebuild populates the location every sunshine build dir / worktree on
+# this machine sees.
 set(_vibeshine_default_webrtc_root "")
 if(DEFINED ENV{VIBESHINE_DEPS_DIR} AND NOT "$ENV{VIBESHINE_DEPS_DIR}" STREQUAL "")
     set(_vibeshine_default_webrtc_root "$ENV{VIBESHINE_DEPS_DIR}/libwebrtc/out")
 elseif(WIN32 AND DEFINED ENV{LOCALAPPDATA} AND NOT "$ENV{LOCALAPPDATA}" STREQUAL "")
     set(_vibeshine_default_webrtc_root "$ENV{LOCALAPPDATA}/Vibeshine/deps/libwebrtc/out")
+elseif(NOT WIN32 AND DEFINED ENV{XDG_CACHE_HOME} AND NOT "$ENV{XDG_CACHE_HOME}" STREQUAL "")
+    set(_vibeshine_default_webrtc_root "$ENV{XDG_CACHE_HOME}/vibeshine/deps/libwebrtc/out")
+elseif(NOT WIN32 AND DEFINED ENV{HOME} AND NOT "$ENV{HOME}" STREQUAL "")
+    set(_vibeshine_default_webrtc_root "$ENV{HOME}/.cache/vibeshine/deps/libwebrtc/out")
 endif()
 
 if(_vibeshine_default_webrtc_root AND EXISTS "${_vibeshine_default_webrtc_root}/include")
@@ -27,8 +34,15 @@ else()
             CACHE PATH "Path to libwebrtc root (contains include/ and lib/).")
 endif()
 unset(_vibeshine_default_webrtc_root)
-set(WEBRTC_LIBRARY "" CACHE FILEPATH "Path to libwebrtc library file.")
-set(WEBRTC_INCLUDE_DIR "" CACHE PATH "Path to libwebrtc include directory.")
+# Deliberately NOT pre-declared as `set(... "" CACHE ...)` here: CMake treats
+# any existing cache entry for a find_path()/find_library() target variable
+# as already-resolved, even an empty one, and skips the actual search. Doing
+# that before the find_path/find_library calls below made auto-discovery via
+# WEBRTC_ROOT silently resolve to nothing on every configure (confirmed via a
+# minimal repro during the Linux port work). Explicit user overrides
+# (-DWEBRTC_INCLUDE_DIR=... / -DWEBRTC_LIBRARY=...) still work exactly as
+# before: find_path/find_library create these cache entries themselves the
+# first time either variable doesn't already exist.
 set(WEBRTC_EXTRA_LIBRARIES "" CACHE STRING "Extra libraries required by libwebrtc.")
 set(WEBRTC_BUILD_DIR "" CACHE PATH "Working directory for the WebRTC build script.")
 set(WEBRTC_OUT_DIR "" CACHE PATH "Output directory for the WebRTC build script.")

@@ -65,6 +65,7 @@
   #include <Psapi.h>
 #elif defined(__linux__)
   #include "platform/linux/display_device.h"
+  #include "platform/linux/frame_limiter.h"
 #endif
 #include "httpcommon.h"
 #include "nvhttp.h"
@@ -2154,6 +2155,19 @@ namespace proc {
         } catch (...) {
           lossless_install_dir_hint.clear();
         }
+      }
+#endif
+#ifdef __linux__
+      if (_launch_session) {
+        const auto policy = rtsp_stream::make_framegen_stream_start_policy(
+          *_launch_session,
+          std::nullopt,
+          ""sv,
+          false,
+          config::frame_limiter.virtual_display_limiter_enabled(),
+          config::frame_limiter.fixed_virtual_display_refresh_multiplier()
+        );
+        platf::frame_limiter_linux::apply_launch_env(_env, policy);
       }
 #endif
       BOOST_LOG(info) << "Executing: ["sv << _app.cmd << "] in ["sv << working_dir << ']';

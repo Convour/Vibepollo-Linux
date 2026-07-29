@@ -943,8 +943,17 @@ This confirms the mechanism itself works, not just that the code compiles. Cavea
 apply: MangoHud's FPS cap only takes effect if the launched app's own command already runs under
 MangoHud (no `LD_PRELOAD` force-injection); the NVIDIA path only toggles vsync, there's no real
 Linux equivalent of NVCP's FPS cap; there is still no `/api/rtss/status`-equivalent endpoint on
-Linux, so `FrameLimiterStep.vue` (unmodified, still Windows-shaped) points at a `404` if a Linux
-user tries to use it from the Web UI.
+Linux.
+
+**Resolved 2026-07-29**: `FrameLimiterStep.vue` was unconditionally Windows-shaped — it polled
+the (Windows-only) `/api/rtss/status` on every page load, and offered the `rtss` provider option,
+the RTSS install-path field, and the SyncLimiter mode selector regardless of platform. Added an
+`isWindows` gate (`config.platform === 'windows'`, the same convention `AppEditModal.vue`/
+`Playnite.vue` already use) around all of that, so Linux no longer fires a guaranteed-404 status
+poll or shows RTSS-only fields with nothing behind them. The platform-agnostic core — enable,
+provider (`auto`/`nvidia-control-panel`), FPS limit, disable-vsync, virtual-display capture mode —
+stays visible on Linux, since it's the part confirmed working above. A short Linux-only notice now
+explains the MangoHud/NVIDIA env-var mechanism in place of RTSS.
 
 ### Steam library sync (`src/platform/linux/steam_library.cpp`) — backend confirmed live, no frontend yet
 

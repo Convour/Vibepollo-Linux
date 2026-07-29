@@ -1737,7 +1737,7 @@ namespace config {
     int_between_f(vars, "nvenc_vbv_increase", video.nv.vbv_percentage_increase, {0, 400});
     bool_f(vars, "nvenc_spatial_aq", video.nv.adaptive_quantization);
     bool_f(vars, "nvenc_temporal_aq", video.nv.temporal_aq);
-    generic_f(vars, "nvenc_split_encode", video.nv.split_encode_mode, nv::split_encode_mode_from_view);
+    generic_f(vars, "nvenc_split_encode", video.nv.split_encode_mode_value, nv::split_encode_mode_from_view);
     generic_f(vars, "nvenc_twopass", video.nv.two_pass, nv::twopass_from_view);
     bool_f(vars, "nvenc_h264_cavlc", video.nv.h264_cavlc);
     bool_f(vars, "nvenc_intra_refresh", video.nv.intra_refresh);

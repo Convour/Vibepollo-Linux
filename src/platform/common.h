@@ -216,6 +216,7 @@ namespace platf {
     vaapi,  ///< VAAPI
     dxgi,  ///< DXGI
     cuda,  ///< CUDA
+    vulkan,  ///< Vulkan
     videotoolbox,  ///< VideoToolbox
     unknown  ///< Unknown
   };

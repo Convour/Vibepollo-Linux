@@ -3088,7 +3088,7 @@ function onNamePicked(val: string | null) {
   }
 }
 
-// Cover preview logic removed; Vibepollo no longer fetches or proxies images
+// Cover preview logic removed; Vibepollo-Linux no longer fetches or proxies images
 async function save() {
   saving.value = true;
   try {

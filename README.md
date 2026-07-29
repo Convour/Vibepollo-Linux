@@ -13,6 +13,10 @@ Arch/CachyOS + NVIDIA + Wayland desktop. See **`docs/linux/AGENTS.md`** and **`d
 for the concrete build fixes and machine setup steps discovered so far, kept up to date as this
 fork progresses. This is a personal fork, not a request for upstream to change focus.
 
+In the spirit of Vibepollo being written with the help of AI, this Linux port has been entirely
+implemented using **Claude Sonnet 5**, with **Claude Opus 5** used for advising on trickier tasks.
+I have not written or read most of the changes myself.
+
 ### Closing the Windows-only feature gap on Linux
 
 Several of Vibepollo's headline features (below) are currently Windows-only, built against

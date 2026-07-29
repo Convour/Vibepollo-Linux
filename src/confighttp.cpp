@@ -509,6 +509,12 @@ namespace confighttp {
   bool read_helper_log(const std::string &source, std::string &out);
 #endif
 
+#ifdef __linux__
+  // Steam library sync endpoints (Linux-only)
+  void getSteamSyncStatus(resp_https_t response, req_https_t request);
+  void postSteamSyncTrigger(resp_https_t response, req_https_t request);
+#endif
+
   enum class op_e {
     ADD,  ///< Add client
     REMOVE  ///< Remove client
@@ -4004,7 +4010,8 @@ namespace confighttp {
   }
 
   /**
-   * @brief Purge all auto-synced Playnite applications (playnite-managed == "auto").
+   * @brief Purge all auto-synced applications - both Playnite (playnite-managed == "auto")
+   * and Steam (steam-managed == "auto"), since both use the same auto-sync marker convention.
    * @api_examples{/api/apps/purge_autosync| POST| null}
    */
   void purgeAutoSyncedApps(resp_https_t response, req_https_t request) {
@@ -4021,10 +4028,13 @@ namespace confighttp {
       nlohmann::json file_tree = nlohmann::json::parse(file);
       auto &apps_node = file_tree["apps"];
 
+      const auto is_auto_managed = [](const nlohmann::json &app, const char *key) {
+        return app.contains(key) && app[key].is_string() && app[key].get<std::string>() == "auto";
+      };
+
       int removed = 0;
       for (auto &app : apps_node) {
-        std::string managed = app.contains("playnite-managed") && app["playnite-managed"].is_string() ? app["playnite-managed"].get<std::string>() : std::string();
-        if (managed == "auto") {
+        if (is_auto_managed(app, "playnite-managed") || is_auto_managed(app, "steam-managed")) {
           ++removed;
           continue;
         }
@@ -5561,6 +5571,10 @@ namespace confighttp {
     register_api_route("^/api/logs/export$", "GET", downloadPlayniteLogs);
     register_api_route("^/api/logs/export_crash/manifest$", "GET", getCrashBundleManifest);
     register_api_route("^/api/logs/export_crash$", "GET", downloadCrashBundle);
+#endif
+#ifdef __linux__
+    register_api_route("^/api/steam/status$", "GET", getSteamSyncStatus);
+    register_api_route("^/api/steam/sync$", "POST", postSteamSyncTrigger);
 #endif
     server.resource["^/images/sunshine.ico$"]["GET"] = getFaviconImage;
     server.resource["^/images/logo-apollo-45.png$"]["GET"] = getApolloLogoImage;

@@ -1030,6 +1030,13 @@ namespace config {
     false  // legacy_auto_detect
   };
 
+  steam_sync_t steam_sync {
+    false,  // enable
+    false,  // auto_sync
+    0,  // autosync_delete_after_days
+    true  // autosync_remove_uninstalled
+  };
+
   namespace {
     int default_min_log_level() {
       if (version_compare::is_prerelease_channel(PROJECT_VERSION)) {
@@ -1985,6 +1992,13 @@ namespace config {
     }
     string_f(vars, "lossless_scaling_path", lossless_scaling.exe_path);
     bool_f(vars, "lossless_scaling_legacy_auto_detect", lossless_scaling.legacy_auto_detect);
+
+    // Linux-only: Steam library sync
+    bool_f(vars, "steam_sync_enable", steam_sync.enable);
+    bool_f(vars, "steam_sync_auto_sync", steam_sync.auto_sync);
+    int_f(vars, "steam_sync_autosync_delete_after_days", steam_sync.autosync_delete_after_days);
+    steam_sync.autosync_delete_after_days = std::max(0, steam_sync.autosync_delete_after_days);
+    bool_f(vars, "steam_sync_autosync_remove_uninstalled", steam_sync.autosync_remove_uninstalled);
 
     path_f(vars, "pkey", nvhttp.pkey);
     path_f(vars, "cert", nvhttp.cert);

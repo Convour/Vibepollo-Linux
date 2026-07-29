@@ -377,6 +377,20 @@ namespace config {
     bool legacy_auto_detect {false};
   };
 
+  // Linux-native equivalent of playnite_t's auto-sync settings, for the Steam library sync
+  // feature. Parsed unconditionally like the other config structs; only acted on by the Linux
+  // backend (src/platform/linux/steam_library.cpp).
+  struct steam_sync_t {
+    bool enable {false};
+    bool auto_sync {false};
+    // Days after which an auto-synced entry for a game no longer found in the library is
+    // removed. 0 disables TTL-based removal (entries are only removed when
+    // autosync_remove_uninstalled applies).
+    int autosync_delete_after_days {0};
+    // Remove auto-synced entries immediately once the game is no longer fully installed.
+    bool autosync_remove_uninstalled {true};
+  };
+
   namespace flag {
     enum flag_e : std::size_t {
       PIN_STDIN = 0,  ///< Read PIN from stdin instead of http
@@ -470,6 +484,7 @@ namespace config {
   extern frame_limiter_t frame_limiter;
   extern rtss_t rtss;
   extern lossless_scaling_t lossless_scaling;
+  extern steam_sync_t steam_sync;
   extern sunshine_t sunshine;
 
   int parse(int argc, char *argv[]);

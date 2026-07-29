@@ -367,7 +367,10 @@ list(APPEND PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/linux/display_device.h"
         "${CMAKE_SOURCE_DIR}/src/platform/linux/display_device.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/linux/frame_limiter.h"
-        "${CMAKE_SOURCE_DIR}/src/platform/linux/frame_limiter.cpp")
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/frame_limiter.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/steam_library.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/steam_library.cpp"
+        "${CMAKE_SOURCE_DIR}/src/confighttp_library_sync.cpp")
 
 list(APPEND PLATFORM_LIBRARIES
         dl

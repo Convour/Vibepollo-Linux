@@ -63,6 +63,8 @@
   #include "tools/playnite_launcher/lossless_scaling.h"
 
   #include <Psapi.h>
+#elif defined(__linux__)
+  #include "platform/linux/display_device.h"
 #endif
 #include "httpcommon.h"
 #include "nvhttp.h"
@@ -1877,6 +1879,14 @@ namespace proc {
     std::unordered_set<DWORD> lossless_baseline_pids;
     bool lossless_monitor_started = false;
     std::string lossless_install_dir_hint;
+#elif defined(__linux__)
+    // Formalizes the hand-validated kscreen-doctor workflow from
+    // docs/linux/LEARNINGS.md (S11, S16-18): switch to the configured
+    // (typically EDID-injected virtual) output before any prep commands run,
+    // replacing the manual global_prep_cmd script that used to do this.
+    if (_launch_session && !platf::display_device_linux::apply_session_display(config::video, *_launch_session)) {
+      BOOST_LOG(warning) << "Linux display device: failed to apply session display configuration; continuing without it.";
+    }
 #endif
 
     for (; _app_prep_it != std::end(_app.prep_cmds); ++_app_prep_it) {
@@ -2659,10 +2669,22 @@ namespace proc {
         BOOST_LOG(debug) << "Display helper: stopping watchdog after app termination.";
         display_helper_integration::stop_watchdog();
       }
+#elif defined(__linux__)
+      if (!platf::display_device_linux::revert_session_display()) {
+        BOOST_LOG(warning) << "Linux display device: failed to revert session display configuration.";
+      }
 #endif
     } else if (should_dispatch_revert && other_streaming_session_active) {
 #ifdef _WIN32
       defer_display_revert();
+#elif defined(__linux__)
+      // v1 limitation: unlike the Windows path (defer_display_revert(), fired
+      // later when the deferring condition clears), there is no deferred-revert
+      // mechanism here yet. The pre-apply snapshot captured by
+      // apply_session_display() simply stays pending until some future
+      // app-termination call lands in the branch above with no other session
+      // active. On a single-session daily-driver machine this branch is rare;
+      // it matters once concurrent sessions are common.
 #endif
       BOOST_LOG(info) << "Deferring display revert after app termination because another streaming session is still active.";
     }

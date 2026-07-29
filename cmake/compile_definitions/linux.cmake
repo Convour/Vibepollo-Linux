@@ -363,7 +363,9 @@ list(APPEND PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/linux/misc.h"
         "${CMAKE_SOURCE_DIR}/src/platform/linux/misc.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/linux/host_stats.cpp"
-        "${CMAKE_SOURCE_DIR}/src/platform/linux/audio.cpp")
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/audio.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/display_device.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/linux/display_device.cpp")
 
 list(APPEND PLATFORM_LIBRARIES
         dl

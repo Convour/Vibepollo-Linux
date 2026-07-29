@@ -223,6 +223,7 @@ import Network from '@/configs/tabs/Network.vue';
 import Files from '@/configs/tabs/Files.vue';
 import Advanced from '@/configs/tabs/Advanced.vue';
 import Playnite from '@/configs/tabs/Playnite.vue';
+import Steam from '@/configs/tabs/Steam.vue';
 import AudioVideo from '@/configs/tabs/AudioVideo.vue';
 import Capture from '@/configs/tabs/Capture.vue';
 import RealtimeStats from '@/configs/tabs/RealtimeStats.vue';
@@ -282,10 +283,15 @@ const tabs = [
   { id: 'advanced', name: 'settings.tabs.advanced', component: markRaw(Advanced) },
   { id: 'stats', name: 'navbar.stats', component: markRaw(RealtimeStats) },
   { id: 'playnite', name: 'navbar.playnite', component: markRaw(Playnite) },
+  { id: 'steam', name: 'settings.tabs.steam', component: markRaw(Steam) },
 ];
 
+// Playnite integration is Windows-only (src/platform/windows/playnite_integration.cpp); hide
+// the tab entirely on other platforms rather than showing a tab that just says "not available"
+// (Steam sync is the Linux-native equivalent - see Steam.vue).
+const WINDOWS_ONLY_TAB_IDS = new Set(['rtss', 'playnite']);
 const tabsFiltered = computed(() =>
-  tabs.filter((t) => (t.id === 'rtss' ? platform.value === 'windows' : true)),
+  tabs.filter((t) => (WINDOWS_ONLY_TAB_IDS.has(t.id) ? platform.value === 'windows' : true)),
 );
 
 const openSections = ref(new Set(['general']));

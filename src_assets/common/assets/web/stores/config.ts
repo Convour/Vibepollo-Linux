@@ -228,6 +228,16 @@ const defaultGroups = [
     },
   },
   {
+    id: 'steam',
+    name: 'Steam',
+    options: {
+      steam_sync_enable: false,
+      steam_sync_auto_sync: false,
+      steam_sync_autosync_delete_after_days: 0,
+      steam_sync_autosync_remove_uninstalled: true,
+    },
+  },
+  {
     id: 'advanced',
     name: 'Advanced',
     options: {
@@ -602,6 +612,12 @@ export const useConfigStore = defineStore('config', () => {
       'playnite_focus_exit_on_first',
       'playnite_fullscreen_entry_enabled',
     ];
+    // Steam library sync boolean-like fields (mirrors the Playnite normalization above)
+    const steamBoolKeys = [
+      'steam_sync_enable',
+      'steam_sync_auto_sync',
+      'steam_sync_autosync_remove_uninstalled',
+    ];
     // Extend boolean normalization to cover RTSS enable flag
     const otherBoolKeys = [
       'frame_limiter_enable',
@@ -618,7 +634,7 @@ export const useConfigStore = defineStore('config', () => {
       'rtx_hdr',
       'rtx_hdr_force_sdr',
     ];
-    const allBoolKeys = playniteBoolKeys.concat(otherBoolKeys);
+    const allBoolKeys = playniteBoolKeys.concat(steamBoolKeys, otherBoolKeys);
     const toBool = (v: any): boolean | null => {
       if (v === true || v === false) return v;
       if (v === 1 || v === 0) return !!v;

@@ -1,14 +1,13 @@
-# WebRTC browser streaming on Linux — scoping notes (2026-07-29)
+# WebRTC browser streaming on Linux — scoping notes (2026-07-29, updated 2026-07-29)
 
-**Status: not started, not yet tracked in the README's "Closing the Windows-only feature gap"
-list.** This is a first-pass investigation into what porting `/webrtc` browser streaming to Linux
-would actually take, done after discovering the running dev service returns
+**Status: milestone 1 (does `libwebrtc` build for Linux at all) is now answered — yes, with two
+small fixes.** This started as a first-pass investigation into what porting `/webrtc` browser
+streaming to Linux would actually take, done after discovering the running dev service returns
 `Error: WebRTC: support is disabled at build time` (`src/webrtc_stream.cpp`) whenever a browser
 client posts an SDP offer, because `SUNSHINE_ENABLE_WEBRTC` is Windows-only and off by default
-(`cmake/prep/options.cmake:20`). Nothing here has been built or run yet — it's a map of the
-territory so the actual work can be scoped into milestones, matching how virtual display / RTSS /
-Playnite got a documented mapping before implementation (see README "Closing the Windows-only
-feature gap on Linux").
+(`cmake/prep/options.cmake:20`). The plan below was originally written before anything had been
+built or run; §1 now includes a completed trial build with real results. Not yet wired into CMake
+or this fork's actual build — see "Rough milestone plan" for what's left.
 
 **Headline finding: this is smaller than it looks at first glance.** `src/webrtc_stream.cpp` is
 ~5,940 lines and greps for D3D11/DXGI/COM look alarming, but the file already gates every
@@ -57,6 +56,51 @@ Shallow-cloned it to inspect (not committed anywhere, just local investigation):
 the only question that actually gates the rest of the plan. Expect this to be slow (webrtc's own
 source tree is tens of GB via `gclient sync`, ninja build is likely 1–3 hours on this machine) but
 disk isn't a constraint (253G free on `/home` right now).
+
+### Trial build results (2026-07-29) — it builds
+
+Ran the full recipe outside CMake in `~/vibeshine-webrtc-linux-trial` (not committed, outside the
+repo): submodules initialized, `.gclient` written for
+`https://github.com/webrtc-sdk/webrtc.git@m125_release` with `target_os=['linux']`, `gclient sync
+--jobs 16` (clean, ~24G synced, ~5 min on this connection — much faster than the "1-3 hours"
+estimate above suggested, since that estimate was for the ninja build, not sync), wrapper copied to
+`src/libwebrtc`, `BUILD.gn` patched per the wrapper's own README diff. **Result: `libwebrtc.so`
+(137M, valid ELF, `ldd` reports no missing deps) built successfully**, exporting
+`lwrtc_video_source_push_nv12` and the rest of the C API — confirmed via `nm -D`.
+
+Two fixes were needed versus the wrapper README's documented Linux recipe verbatim, neither of
+which touches upstream webrtc source:
+
+1. **Drop `use_custom_libcxx=false` from the `gn gen` args.** The README's Linux recipe sets this
+   explicitly, but `build/config/c++/c++.gni` shows `use_custom_libcxx` already defaults to `true`
+   on Linux — Chromium/WebRTC's own Linux builds always use their bundled libc++, never the
+   sysroot's system libstdc++. Building with the README's literal args (`use_custom_libcxx=false`)
+   fails at 655/3877 objects in `modules/congestion_controller/goog_cc/loss_based_bwe_v2.cc:552`
+   (`config.emplace()`) with `error: no matching member function for call to 'emplace'` — a known
+   class of GCC ≤10 `is_constructible_v` bug for aggregates that contain members of a type with an
+   explicitly deleted default constructor (`TimeDelta`/`DataRate`, see
+   `api/units/time_delta.h:56`) but a default member initializer (`= TimeDelta::Zero()`). The
+   Debian bullseye sysroot's bundled libstdc++ 10 headers evaluate this incorrectly; Chromium's own
+   libc++ does not have the bug. Removing the override (falling back to the Linux default of
+   `true`) fixed it — confirmed by rebuilding just that one object file before re-running the full
+   build.
+2. **Trim 3 unused NAL-type constants from the wrapper's own
+   `libwebrtc/src/passthrough_video_encoder.cc`.** `kH264NalTypeIdr`, `kHevcNalTypeIdrWRadl`,
+   `kHevcNalTypeIdrNLp` are defined but never referenced anywhere in that file, and the build's
+   `-Werror -Wunused-const-variable` turns that into a hard failure at 2289/3944 objects (progress
+   at that point was already through 100% of upstream webrtc's own source — this was the wrapper's
+   own code). This is dead code, not a platform issue; deleting the 3 lines was sufficient. Applied
+   only to the trial checkout's copy, not the pinned submodule — needs a real patch (see milestone
+   plan below) before this is a repeatable build.
+
+Working `gn gen` args for Linux (x64, debug):
+```
+target_os="linux" target_cpu="x64" is_debug=true rtc_include_tests=false rtc_use_h264=true \
+ffmpeg_branding="Chrome" is_component_build=false use_rtti=true rtc_enable_protobuf=false
+```
+(same as the README's, minus `use_custom_libcxx=false`.) Not yet tried: a release build
+(`is_debug=false`), 32-bit/arm targets, or size/perf comparison against the Windows DLL — this
+trial only proves the debug x64 shared object links and exports the expected symbols.
 
 ## 2. What in `webrtc_stream.cpp` is actually Windows-only
 
@@ -109,15 +153,17 @@ and pick up real wiring later as the virtual-display and RTSS Linux ports land i
 
 ## 3. Rough milestone plan
 
-1. **Prove the dependency builds.** Manual `gclient`/`gn`/`ninja` trial build of
-   `Nonary/libwebrtc@feat/upgrade-to-m137` for Linux, outside CMake. Go/no-go gate for everything
-   below — if this doesn't build clean, the whole plan needs to be rethought (patching the wrapper,
-   or pinning an older/different webrtc-sdk/webrtc branch with better Linux support history).
+1. ~~**Prove the dependency builds.**~~ **Done 2026-07-29** — see trial build results above.
+   `libwebrtc.so` builds clean for Linux x64 debug with two small fixes (a `gn` arg removal, a
+   3-line dead-code trim in the wrapper's own source). No upstream webrtc patching needed.
 2. **Wire the build.** `scripts/build_linux_webrtc.sh` (new, analogous to
    `build_mingw_webrtc.ps1` but simpler — no MSVC toolchain patching), plus an
    `if(SUNSHINE_ENABLE_WEBRTC) include(...webrtc.cmake) endif()` block added to
    `cmake/dependencies/linux.cmake` so the existing non-`WIN32` `find_library` branch in
-   `webrtc.cmake` actually gets reached.
+   `webrtc.cmake` actually gets reached. The script needs to bake in both fixes from the trial:
+   drop `use_custom_libcxx=false` from the `gn gen` args, and carry a small patch (or upstream PR)
+   for the 3 unused constants in `passthrough_video_encoder.cc` since that file lives in the pinned
+   submodule, not something this fork can edit in place without patching.
 3. **Frame delivery.** New `#ifdef __linux__` branch in `webrtc_stream.cpp` mirroring
    `try_push_nv12_frame`, sourcing from the existing `graphics.cpp` NV12 pipeline. This is the
    only genuinely new C++ logic the port needs.

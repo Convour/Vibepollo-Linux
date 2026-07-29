@@ -1168,7 +1168,206 @@ function clearSnapshotHotkey(): void {
       </div>
     </template>
     <template #freebsd></template>
-    <template #linux></template>
+    <template #linux>
+      <div class="space-y-4">
+        <!-- Step 2: which output to prepare and how -->
+        <section v-if="section === 'pre'" class="min-w-0">
+          <h4 class="mb-3 break-words text-sm font-semibold leading-snug">
+            {{ $t('config.dd_step_2') }}: {{ $t('config.dd_pre_stream_setup') }}
+          </h4>
+
+          <div class="text-sm font-medium mb-2">{{ $t('config.dd_config_label') }}</div>
+          <n-radio-group v-model:value="config.dd_configuration_option">
+            <div class="grid gap-2">
+              <n-radio
+                v-for="opt in ddConfigurationOptions"
+                :key="opt.value"
+                :value="opt.value"
+                :label="opt.label"
+              />
+            </div>
+          </n-radio-group>
+          <div class="text-[11px] opacity-60 mt-1">
+            {{ $t('config.dd_config_hint') }}
+          </div>
+
+          <transition name="fade">
+            <div
+              v-if="config.dd_configuration_option === 'ensure_only_display'"
+              class="mt-3 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 p-3"
+            >
+              <p class="text-[11px] text-amber-900 dark:text-amber-100">
+                <span class="flex items-start gap-2">
+                  <i
+                    class="fas fa-exclamation-triangle text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5"
+                  />
+                  <span class="block">{{
+                    $t('config.dd_config_ensure_only_display_warning_linux')
+                  }}</span>
+                </span>
+              </p>
+            </div>
+          </transition>
+
+          <div class="mt-4 rounded-lg border border-primary/30 bg-primary/10 px-4 py-3 text-[12px]">
+            <div class="opacity-80">{{ $t('config.dd_linux_notice') }}</div>
+          </div>
+        </section>
+
+        <!-- Step 3: resolution / refresh / HDR overrides -->
+        <section
+          v-if="section === 'options' && config.dd_configuration_option !== 'disabled'"
+          class="min-w-0"
+        >
+          <h4 class="mb-3 break-words text-sm font-semibold leading-snug">
+            {{ $t('config.dd_step_3') }}: {{ $t('config.dd_optional_adjustments') }}
+          </h4>
+          <n-grid :cols="12" x-gap="16" y-gap="16" class="optional-adjustments-grid">
+            <!-- Resolution option -->
+            <n-gi :span="12" :lg="6">
+              <div class="space-y-3">
+                <div class="space-y-2">
+                  <label for="dd_resolution_option_linux" class="form-label">{{
+                    $t('config.dd_resolution_option')
+                  }}</label>
+                  <n-select
+                    id="dd_resolution_option_linux"
+                    v-model:value="config.dd_resolution_option"
+                    :options="ddResolutionOptions"
+                    class="w-full"
+                  />
+                </div>
+
+                <div
+                  v-if="config.dd_resolution_option === 'manual'"
+                  class="optional-subsection space-y-2 border-l border-amber-400 dark:border-amber-500 pl-3"
+                >
+                  <div
+                    class="rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 p-3"
+                  >
+                    <p class="text-[11px] text-amber-900 dark:text-amber-100 space-y-1.5">
+                      <span class="flex items-start gap-2">
+                        <i
+                          class="fas fa-exclamation-circle text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5"
+                        />
+                        <span class="block">{{
+                          $t('config.dd_resolution_option_manual_desc')
+                        }}</span>
+                      </span>
+                    </p>
+                  </div>
+                  <n-input
+                    id="dd_manual_resolution_linux"
+                    v-model:value="config.dd_manual_resolution"
+                    type="text"
+                    class="font-mono w-full"
+                    placeholder="2560x1440"
+                    v-bind="manualResolutionValid ? {} : { status: 'error' }"
+                  />
+                  <p v-if="!manualResolutionValid" class="text-[11px] text-red-500">
+                    {{ $t('config.dd_validation_resolution', { example: '2560x1440' }) }}
+                  </p>
+                </div>
+              </div>
+            </n-gi>
+
+            <!-- Refresh rate option -->
+            <n-gi :span="12" :lg="6">
+              <div class="space-y-3">
+                <div class="space-y-2">
+                  <label for="dd_refresh_rate_option_linux" class="form-label">{{
+                    $t('config.dd_refresh_rate_option')
+                  }}</label>
+                  <n-select
+                    id="dd_refresh_rate_option_linux"
+                    v-model:value="config.dd_refresh_rate_option"
+                    :options="ddRefreshRateOptions"
+                    class="w-full"
+                  />
+                </div>
+
+                <div
+                  v-if="config.dd_refresh_rate_option === 'manual'"
+                  class="optional-subsection space-y-2 border-l border-amber-400 dark:border-amber-500 pl-3"
+                >
+                  <div
+                    class="rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 p-3"
+                  >
+                    <p class="text-[11px] text-amber-900 dark:text-amber-100 space-y-1.5">
+                      <span class="flex items-start gap-2">
+                        <i
+                          class="fas fa-exclamation-circle text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5"
+                        />
+                        <span class="block">{{
+                          $t('config.dd_refresh_rate_option_manual_desc')
+                        }}</span>
+                      </span>
+                    </p>
+                  </div>
+                  <n-input
+                    id="dd_manual_refresh_rate_linux"
+                    v-model:value="config.dd_manual_refresh_rate"
+                    type="text"
+                    class="font-mono w-full"
+                    placeholder="59.9558"
+                    v-bind="
+                      isRefreshFieldValid(config.dd_manual_refresh_rate) ? {} : { status: 'error' }
+                    "
+                  />
+                  <p
+                    v-if="!isRefreshFieldValid(config.dd_manual_refresh_rate)"
+                    class="text-[11px] text-red-500"
+                  >
+                    {{ $t('config.dd_validation_refresh_rate') }}
+                  </p>
+                </div>
+              </div>
+            </n-gi>
+
+            <!-- HDR option -->
+            <n-gi :span="12" :lg="6">
+              <div class="space-y-3">
+                <div class="space-y-2">
+                  <label for="dd_hdr_option_linux" class="form-label">{{
+                    $t('config.dd_hdr_option')
+                  }}</label>
+                  <n-select
+                    id="dd_hdr_option_linux"
+                    v-model:value="config.dd_hdr_option"
+                    :options="ddHdrOptions"
+                    class="w-full"
+                  />
+                </div>
+
+                <div
+                  class="optional-subsection space-y-2 border-l border-dark/10 dark:border-light/10 pl-3"
+                >
+                  <Checkbox
+                    id="dd_wa_dummy_plug_hdr10_linux"
+                    v-model="config.dd_wa_dummy_plug_hdr10"
+                    locale-prefix="config"
+                    :default="false"
+                  >
+                    <template #default>
+                      <span class="block">
+                        <a
+                          :href="dummyPlugWikiUrl"
+                          class="underline break-words"
+                          rel="noopener"
+                          target="_blank"
+                        >
+                          {{ $t('config.dd_wa_dummy_plug_hdr10_link') }}
+                        </a>
+                      </span>
+                    </template>
+                  </Checkbox>
+                </div>
+              </div>
+            </n-gi>
+          </n-grid>
+        </section>
+      </div>
+    </template>
     <template #macos></template>
   </PlatformLayout>
 </template>

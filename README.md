@@ -22,29 +22,61 @@ I have not written or read most of the changes myself.
 Several of Vibepollo's headline features (below) are currently Windows-only, built against
 Win32/driver-level APIs with no Linux equivalent in the codebase. Rather than treating that as a
 permanent limitation, this fork is mapping each one to a Linux-native mechanism that achieves the
-same end-user outcome, even where the underlying implementation has to be entirely different:
+same end-user outcome, even where the underlying implementation has to be entirely different.
+Status below reflects live verification against real hardware (Arch/CachyOS + NVIDIA + KDE
+Plasma/Wayland, `docs/linux/LEARNINGS.md` §24-25), not just code that compiles:
 
-* **Native Virtualized Display → KDE `kscreen-doctor` + EDID-injected output.** Windows uses a
-  bundled kernel-mode driver to create a synthetic monitor. On Linux (KDE Plasma/Wayland target)
-  the equivalent is an EDID-injected dummy output (one-time kernel/initramfs setup, documented in
+* **RTSS & NVIDIA Control Panel frame limiting → MangoHud + NVIDIA env vars.** ✅ **Confirmed
+  working end-to-end.** Windows drives RTSS via DLL-hook injection and NVCP via NVAPI
+  driver-settings ordinals. Linux capture already paces to the stream's target FPS, so the gap was
+  capping the game's own render loop and toggling vsync/prerender-limit — done via MangoHud's
+  config-driven FPS limiter plus `__GL_SYNC_TO_VBLANK`/`__GL_MaxFramesAllowed` set on the launched
+  process's environment. Live-verified by dumping a launched process's real environment
+  (`MANGOHUD_CONFIG=fps_limit=60000`, `__GL_SYNC_TO_VBLANK=0`) and the Web UI's frame-limiting tab
+  is gated to hide the RTSS-only fields that have no Linux backend. Caveats that still apply:
+  MangoHud's cap only takes effect if the launched app's own command already runs under MangoHud
+  (no forced `LD_PRELOAD` injection yet); NVIDIA parity is inherently weaker on Linux (no
+  NVAPI-equivalent system-wide toggle); there's no `/api/rtss/status`-equivalent endpoint.
+* **Playnite Integration → Steam library sync (Lutris planned next).** ✅ **Shipped and
+  live-verified end-to-end**, including the Web UI. Playnite itself has no Linux port, so this
+  isn't a port — it's a new integration targeting Linux-native launchers. Steam library discovery
+  (`GET /api/steam/status`) parses local `.vdf`/`.acf` files with no companion process and was
+  confirmed against a real Steam install (141 games discovered correctly). Launch/quit tracking
+  originally reused `steam://rungameid/<appid>`, but that hands the real game off to Steam's
+  already-running client as a process Sunshine never owns — quitting in-game didn't end the
+  stream, and ending the stream didn't kill the game. Fixed via a companion launcher binary
+  (`tools/steam_launcher/`, mirroring the Playnite integration's own proxy-process pattern) that
+  Sunshine tracks directly and that matches the real game process(es) via `SteamAppId` in
+  `/proc/<pid>/environ`; both directions are now confirmed live against a real Moonlight client
+  and a Proton title (`docs/linux/LEARNINGS.md` §25). A Web UI tab (enable/auto-sync toggles,
+  manual "Sync now", status card) ships alongside the backend. Lutris is next; the portable JSON
+  protocol/reconciliation logic from the Playnite implementation is being generalized so Lutris
+  (and eventually a real Playnite path, if one ever exists on Linux) can reuse the same core.
+* **Native Virtualized Display → KDE `kscreen-doctor` + EDID-injected output.** 🟡 **Partially
+  verified — apply path confirmed, revert path still untested live.** Windows uses a bundled
+  kernel-mode driver to create a synthetic monitor. On Linux (KDE Plasma/Wayland target) the
+  equivalent is an EDID-injected dummy output (one-time kernel/initramfs setup, documented in
   `docs/linux/LEARNINGS.md` §11/§16/§17) that Sunshine enables/disables/mode-switches at session
   start/stop via `kscreen-doctor`, replacing the hand-rolled `global_prep_cmd` scripts validated
   there with native code. Non-KDE compositors degrade gracefully rather than failing the stream.
-* **RTSS & NVIDIA Control Panel frame limiting → MangoHud + NVIDIA env vars.** Windows drives RTSS
-  via DLL-hook injection and NVCP via NVAPI driver-settings ordinals. Linux capture already paces
-  to the stream's target FPS, so the remaining gap is capping the game's own render loop and
-  toggling vsync/prerender-limit — done via MangoHud's config-driven FPS limiter plus
-  `__GL_SYNC_TO_VBLANK`/`__GL_MaxFramesAllowed` set on the launched process's environment. NVIDIA
-  parity is inherently weaker on Linux (no NVAPI-equivalent system-wide toggle).
-* **Playnite Integration → Steam library sync (Lutris planned next).** Playnite itself has no
-  Linux port, so this isn't a port — it's a new integration targeting Linux-native launchers.
-  Steam ships first since it needs no companion process (local `.vdf`/`.acf` file parsing only,
-  launch via `steam://rungameid/<appid>`); the portable JSON protocol/reconciliation logic from
-  the Playnite implementation is being generalized so Lutris (and eventually a real Playnite path,
-  if one ever exists on Linux) can reuse the same core.
+  The apply-side hook (`launch_app_commands()`) fires correctly and no-ops safely when unconfigured;
+  no session in this repo's history has yet exercised the revert path end-to-end (`terminate()` →
+  `revert_session_display`) against a real EDID-injected output with a long-running process, so
+  that half is implemented but not yet proven on hardware.
+* **WebRTC browser streaming (`/webrtc`) — currently non-functional on Linux, scoping done, build
+  not yet attempted.** 🔴 Not part of the original Windows-only feature map (the code is largely
+  platform-agnostic), but discovered during this fork's audit to be effectively Windows-only in
+  practice: `SUNSHINE_ENABLE_WEBRTC` defaults `OFF` and is documented "(Windows only)"
+  (`cmake/prep/options.cmake:20`), so a Linux build currently returns `WebRTC: support is disabled
+  at build time` for any browser client. A scoping pass (`docs/linux/webrtc-linux-port-plan.md`)
+  found the gap smaller than expected — `src/webrtc_stream.cpp`'s signaling/session/SDP/data-channel
+  logic already gates Windows-specifics behind `#ifdef _WIN32`, and the `libwebrtc` dependency's
+  own `BUILD.gn` has real `is_linux` branches — but that Linux support is inherited from upstream
+  and **not CI-validated in this fork's `libwebrtc` branch**; nobody has actually built it for
+  Linux yet. First concrete milestone (not yet started): a manual trial build of `libwebrtc` for
+  Linux to confirm it compiles before scoping the rest.
 
-This mapping work is tracked as an active implementation effort, not yet shipped — see
-`docs/linux/LEARNINGS.md` for what's already validated by hand on real hardware.
+See `docs/linux/LEARNINGS.md` for the full verification notes behind each status above.
 
 ## What is Vibepollo?
 
@@ -54,41 +86,69 @@ Vibepollo is an AI‑enhanced version of Apollo, a popular remote streaming appl
 
 ## Key Features
 
+These are upstream Vibepollo's headline features as originally written (Windows-first). The
+`Linux:` line under each one is this fork's status — see "Closing the Windows-only feature gap on
+Linux" above for the four features actively being ported, and `docs/linux/LEARNINGS.md` for the
+underlying verification.
+
 * **Display Setting Automation**
   Vibepollo adds multiple safeguards to prevent dummy plugs or virtual displays from getting “stuck” when you return to your PC. It resolves common Windows 11 **24H2** display issues and restores your layout after hard crashes, shutdowns, or reboots. (The only scenario it can’t restore is during a user logout.) The workflow is simplified to a dropdown—just pick the display you want to stream.
+  **Linux: 🟡 partial.** The `kscreen-doctor`-driven apply path is live; the crash/reboot-recovery
+  and revert-on-session-end guarantees this bullet describes are Windows-specific behavior not yet
+  reproduced on Linux (see the virtual-display entry above).
 
 * **Windows Graphics Capture in Service Mode**
   Running Windows Graphics Capture (WGC) as a service improves performance and stability. It captures the full frame rate of frame‑generated titles, avoids crashes when VRAM is exceeded, and follows Microsoft’s recommended capture method going forward. Vibepollo auto‑switches capture methods on demand, so the login screen and UAC prompts are still captured even when using WGC.
+  **Linux: N/A — different mechanism, not a gap.** WGC is a Windows API; Linux capture goes through
+  KMS/DRM, VA-API, Vulkan, Wayland, or a portal backend instead (`SUNSHINE_ENABLE_DRM/VAAPI/
+  VULKAN/WAYLAND/KWIN/PORTAL`, all on by default), confirmed working via NVENC probes on this
+  fork's dev hardware. There's no login-screen/UAC-prompt equivalent to auto-switch for.
 
 * **Native Virtualized Display**
   Vibeshine uses its bundled virtual display driver by default and keeps SudoVDA installed as a rollback option. It can capture output from any GPU, including those in hybrid laptops, ensuring the virtual screen connects to the correct GPU when needed. It also provides simple virtual display options, allowing users to choose between a physical or virtual display. On headless setups, it enables automatically to prevent 503 errors and false encoder detections, such as incorrect HEVC support reports.
+  **Linux: 🟡 in progress** — see "Closing the Windows-only feature gap on Linux" above.
 
 * **WebRTC Browser Streaming**
   Vibeshine can stream straight to your web browser from the `/webrtc` page, so you can play without installing a separate client. It is designed for fast response and smooth audio/video, while still letting you use the regular Moonlight-compatible streaming path if you prefer.
+  **Linux: 🔴 not functional yet** — see "Closing the Windows-only feature gap on Linux" above.
 
 * **Redesigned Frontend with Full Mobile Support**
   The new Web UI makes it easy to add games and change settings without restarting the program. It’s fully responsive, so you can manage your library and configuration from a phone or tablet.
+  **Linux: ✅ works.** The frontend is platform-agnostic; served and used from this fork's Linux
+  builds daily, including the Linux-specific tabs (Steam sync, frame limiting) added for this port.
 
 * **Playnite Integration**
   Deep integration with Playnite (a “launcher of launchers”) automatically syncs your recently played games with configurable expiration rules, per‑category sync, and exclusions. You can also add games manually from a Web UI dropdown; Vibepollo handles artwork, launching, and clean termination—emulators included. The goal is a seamless, GeForce Experience–style library experience—only better.
+  **Linux: ✅ Steam sync shipped as the Linux equivalent** (Playnite itself has no Linux port) —
+  see "Closing the Windows-only feature gap on Linux" above. Lutris planned next.
 
 * **RTSS & NVIDIA Control Panel Integration**
   Vibepollo can manage RTSS to apply the correct frame limit and disable V‑Sync before streaming, significantly improving frame pacing and smoothness. The applied frame cap matches the client device’s requested FPS.
+  **Linux: ✅ MangoHud/env-var equivalent confirmed working end-to-end** — see "Closing the
+  Windows-only feature gap on Linux" above.
 
 * **Frame‑Generated Capture Fixes**
   DLSS/FSR game-provided frame generation requires Vibepollo's virtual screen for reliable capture. The virtual display guarantees composed flip, allowing generated frames to be captured through WGC, and Vibepollo targets 4x virtual refresh for pacing.
+  **Linux: 🔴 not yet addressed.** This depends on both the virtual display's still-unverified
+  revert path and a WGC-equivalent composed-flip guarantee under KDE/Wayland; no Linux-specific
+  work has started here.
 
 * **Lossless Scaling & NVIDIA Smooth Motion**
   Vibepollo can automatically apply optimal Lossless Scaling settings to generate frames for any application. On RTX 40‑series and newer GPUs, you can optionally enable **NVIDIA Smooth Motion** for better performance and image quality (while Lossless Scaling remains more customizable).
+  **Linux: 🔴 not planned.** Lossless Scaling is a Windows-only third-party app with no Linux
+  build; no Linux-native equivalent is currently mapped or scheduled.
 
 * **API Token Management**
   Access tokens can be tightly scoped—down to specific methods—so external scripts don’t need full administrative rights. This improves security while keeping automation flexible.
+  **Linux: ✅ works.** Platform-agnostic; unaffected by this port.
 
 * **Session‑Based Authentication**
   The sign‑in flow supports password managers and includes a “remember me” option to minimize prompts. The experience is security‑hardened without sacrificing convenience.
+  **Linux: ✅ works.** Platform-agnostic; unaffected by this port.
 
 * **Update Notifications**
   Built‑in notifications let you know when new features or bug fixes are available, making it easy to stay current.
+  **Linux: ✅ works.** Platform-agnostic; unaffected by this port.
 
 Due to the sheer pace and volume of changes I was producing, it became impractical to manage them within the original Sunshine repository. The review process simply couldn’t keep up with the rate of development, and large feature sets were piling up without a clear path to integration. To ensure the work remained organized, maintainable, and actively progressing, I established Vibepollo as a standalone fork.
 

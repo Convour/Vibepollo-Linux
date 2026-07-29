@@ -862,15 +862,53 @@ systemctl --user restart plasma-plasmashell.service
 ```
 
 ### "Open Apollo" tray menu logs success but no browser window appears to open
-`platf::open_url()` shells out to `xdg-open`, which — on a KDE Plasma 6 session
-(`KDE_SESSION_VERSION=6`) — delegates to `kde-open`, KDE's own KRun-based URL opener. If the
-default browser (e.g. Firefox-based browsers like LibreWolf) already has a window open, Gecko's
-single-instance remoting means the request correctly reaches the existing process and opens a new
-tab there (visible as a new `-contentproc ... tab` child process at the exact moment of the
-click) — but `kde-open`/KRun does not force-raise or focus that window, and KWin's focus-stealing
-prevention can keep it from popping to the foreground. journalctl will show a clean
-`Opened url [...]` with no error either way, so a "success" log line does **not** mean a window
-became visible. Before assuming this is a Sunshine/Apollo bug, check other virtual
-desktops/activities and minimized windows for an already-open tab pointed at the web UI — this is
-standard desktop behavior, not something to patch around with browser-specific flags in the
-portable `xdg-open` code path.
+This was originally suspected to be a KDE/KWin focus-stealing issue (an already-open browser
+window receiving the tab but not being raised) — that theory was disproven by direct testing:
+after a tray click, no tab appeared anywhere (checked every virtual desktop/activity, including
+minimized windows). The real cause is a dangling-pointer bug that silently corrupts the
+environment handed to every child process `run_command()` spawns, not just `xdg-open`.
+
+`platf::open_url()` builds a `bp::environment` snapshot via `bp::this_process::env()` and passes
+it to `platf::run_command()`, which calls `env.to_process_environment()`
+(`src/boost_process_shim.h`). That method used to build a local `std::vector<std::string>
+env_buffer` and return `v2::process_environment(env_buffer)` in one expression. Boost.Process v2's
+`process_environment` constructor has two `build_env` overloads selected by whether the argument's
+element type converts to `cstring_ref`; `std::string` does (via `.c_str()`), so the *non-owning*
+overload runs — it collects raw `e.c_str()` pointers into `process_environment::env` and leaves
+the copying member (`process_environment::env_buffer`) empty. Those pointers point into
+`env_buffer`, a function-local vector destroyed the instant `to_process_environment()` returns —
+so the returned `process_environment` is dangling before `run_command()` even uses it to `execve`
+the child.
+
+This was confirmed two ways: a PATH-shimmed `xdg-open` (intercepting the real binary, logging
+argv/env/fds, then `exec`-ing through) showed the child process missing `HOME`, `PATH`,
+`DBUS_SESSION_BUS_ADDRESS`, `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR`, `XDG_CURRENT_DESKTOP`, and
+`XDG_SESSION_TYPE`, plus a garbled trailing environment entry (classic freed-memory garbage).
+Separately, `pkexec cat /proc/<sunshine-pid>/environ` (needed because Sunshine's `setcap`
+capabilities make it non-dumpable, so `/proc/<pid>/environ` isn't readable without root) proved
+Sunshine's *own* environment has every one of those variables intact — the corruption happens
+strictly in the copy-to-child path, not in the session or the systemd user service. Without
+`DBUS_SESSION_BUS_ADDRESS`/`XDG_RUNTIME_DIR`, `xdg-open` has no session bus to hand the URL to a
+browser through, which is why the process spawns cleanly, logs `Opened url [...]` with no error,
+and nothing ever opens.
+
+Fixed by splitting `to_process_environment()` into `to_env_strings()` (returns the owned
+`std::vector<std::string>`/`vector<std::wstring>`) and constructing the `process_environment` at
+each call site with the owning vector declared first, so it outlives the `process_environment`
+built from it:
+```cpp
+auto env_strings = env.to_env_strings();       // declared first: owns the data
+v2::process_environment env_init {env_strings}; // views into env_strings; destroyed first
+```
+This affects `src/platform/linux/misc.cpp` and `src/platform/macos/misc.mm` (both call
+`to_process_environment()`); Windows's `run_command()` never called it, so it was unaffected. The
+bug wasn't limited to `open_url()` — `run_command()` is the single spawn path for game launches
+and prep/undo commands too (`src/process.cpp`, `src/stream.cpp`), so every child process Sunshine
+spawned on Linux/macOS was receiving a corrupted environment, not just the browser-opening one.
+
+Do not "fix" this by passing `std::vector<v2::environment::key_value_pair>` instead of
+`vector<string>` to force the copying `build_env` overload — `key_value_pair` also exposes
+`.c_str()`, so it likely converts to `cstring_ref` too and silently re-selects the dangling-pointer
+path. Do not cache the buffer as a `mutable` member of `basic_environment` mutated from a `const`
+method either — `process.cpp` passes long-lived `_env` members into `run_command()` from multiple
+call sites, so a shared mutable buffer risks a data race across concurrent launches.

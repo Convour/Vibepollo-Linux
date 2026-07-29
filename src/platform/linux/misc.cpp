@@ -431,7 +431,10 @@ namespace platf {
       stdio.err = nullptr;
     }
 
-    auto env_init = env.to_process_environment();
+    // env_strings must outlive env_init: process_environment stores raw
+    // pointers into these strings rather than copies of them.
+    auto env_strings = env.to_env_strings();
+    v2::process_environment env_init {env_strings};
     boost::asio::system_executor exec;
 
     try {

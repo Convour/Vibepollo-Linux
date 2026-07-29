@@ -221,14 +221,25 @@ namespace boost_process_shim {
       return _entries.cend();
     }
 
-    process_environment_t to_process_environment() const {
+    // Returns the owned "NAME=VALUE" strings backing a process_environment.
+    //
+    // v2::process_environment can be built from a vector of strings without
+    // copying them: it stores raw pointers into the vector's elements
+    // instead. That means the caller must keep the returned vector alive
+    // (declared before, and destroyed after, the process_environment built
+    // from it) for as long as the process_environment is used. Do not
+    // collapse this back into a single method that builds and returns a
+    // process_environment directly - the backing vector would be destroyed
+    // at return time, leaving the process_environment holding dangling
+    // pointers.
+    auto to_env_strings() const {
       if constexpr (std::is_same_v<Char, wchar_t>) {
         std::vector<std::wstring> env_buffer;
         env_buffer.reserve(_entries.size());
         for (const auto &entry : _entries) {
           env_buffer.push_back(entry.get_name() + L"=" + entry.to_string());
         }
-        return process_environment_t(env_buffer);
+        return env_buffer;
       } else {
 #ifdef _WIN32
         std::vector<std::wstring> env_buffer;
@@ -236,14 +247,14 @@ namespace boost_process_shim {
         for (const auto &entry : _entries) {
           env_buffer.push_back(detail::from_utf8(entry.get_name()) + L"=" + detail::from_utf8(entry.to_string()));
         }
-        return process_environment_t(env_buffer);
+        return env_buffer;
 #else
         std::vector<std::string> env_buffer;
         env_buffer.reserve(_entries.size());
         for (const auto &entry : _entries) {
           env_buffer.push_back(entry.get_name() + "=" + entry.to_string());
         }
-        return v2::process_environment(env_buffer);
+        return env_buffer;
 #endif
       }
     }

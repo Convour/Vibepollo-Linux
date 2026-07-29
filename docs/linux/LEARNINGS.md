@@ -996,3 +996,8 @@ meaning automatic port-forwarding isn't active — this doesn't confirm the box 
 (a manual router forward can't be ruled out from the daemon side), but the app-layer safeguard
 that would normally restrict this to LAN-only is not what's actually configured. Worth checking
 deliberately on any machine following this doc, not assuming `wan` was intentional.
+
+**Resolved 2026-07-29**: confirmed unintentional on this box; set to `origin_web_ui_allowed = lan`
+and restarted the service. Verified the fix didn't break loopback/authenticated access
+(`GET /api/metadata` with a valid session cookie still returns `200`; a `401` with no cookie is
+just the normal auth gate, not an origin block).

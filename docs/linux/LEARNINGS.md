@@ -843,3 +843,34 @@ grants the *active seat session's* user a POSIX ACL directly on the device node 
 `getfacl /dev/uinput`. If a `user:<name>:rw-` ACL entry is already present, input device access
 works immediately without waiting for group membership to take effect; only things gated purely
 by *group* ownership (with no `uaccess` tag) still need the fresh login.
+
+### Missing tray icon after manually installing icons — `plasmashell` needs a restart, not `sunshine`
+Because of the `cmake --install` partial-failure above, the SVG icon files
+(`apollo-tray.svg`/`apollo-playing.svg`/`apollo-pausing.svg`/`apollo-locked.svg`/`apollo.svg`) may
+never get copied into `~/.local/share/icons/hicolor/scalable/{apps,status}/`. Installing them
+manually and restarting the `sunshine` service is not enough on KDE Plasma: the tray icon is
+resolved by *Plasma's* own `KIconLoader`/`KIconEngine` (via the StatusNotifierItem DBus interface),
+not GTK — `third-party/tray/src/tray_linux.c` only ever passes an icon *name* (e.g. `apollo-tray`)
+to `app_indicator_set_icon_full()`, never a theme path, so resolution is entirely delegated to
+whichever desktop shell owns the tray. If `plasmashell` was already running when the icon files
+were added, its icon cache/directory watches predate the new `scalable/status/` directory and it
+never notices the new files — restarting `sunshine` (or even `gtk-update-icon-cache`, which is
+GTK-only and irrelevant here) has no effect. Fix: restart the shell itself so it rescans icon
+theme directories:
+```bash
+systemctl --user restart plasma-plasmashell.service
+```
+
+### "Open Apollo" tray menu logs success but no browser window appears to open
+`platf::open_url()` shells out to `xdg-open`, which — on a KDE Plasma 6 session
+(`KDE_SESSION_VERSION=6`) — delegates to `kde-open`, KDE's own KRun-based URL opener. If the
+default browser (e.g. Firefox-based browsers like LibreWolf) already has a window open, Gecko's
+single-instance remoting means the request correctly reaches the existing process and opens a new
+tab there (visible as a new `-contentproc ... tab` child process at the exact moment of the
+click) — but `kde-open`/KRun does not force-raise or focus that window, and KWin's focus-stealing
+prevention can keep it from popping to the foreground. journalctl will show a clean
+`Opened url [...]` with no error either way, so a "success" log line does **not** mean a window
+became visible. Before assuming this is a Sunshine/Apollo bug, check other virtual
+desktops/activities and minimized windows for an already-open tab pointed at the web UI — this is
+standard desktop behavior, not something to patch around with browser-specific flags in the
+portable `xdg-open` code path.

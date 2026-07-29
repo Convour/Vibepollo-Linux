@@ -13,6 +13,35 @@ Arch/CachyOS + NVIDIA + Wayland desktop. See **`docs/linux/AGENTS.md`** and **`d
 for the concrete build fixes and machine setup steps discovered so far, kept up to date as this
 fork progresses. This is a personal fork, not a request for upstream to change focus.
 
+### Closing the Windows-only feature gap on Linux
+
+Several of Vibepollo's headline features (below) are currently Windows-only, built against
+Win32/driver-level APIs with no Linux equivalent in the codebase. Rather than treating that as a
+permanent limitation, this fork is mapping each one to a Linux-native mechanism that achieves the
+same end-user outcome, even where the underlying implementation has to be entirely different:
+
+* **Native Virtualized Display → KDE `kscreen-doctor` + EDID-injected output.** Windows uses a
+  bundled kernel-mode driver to create a synthetic monitor. On Linux (KDE Plasma/Wayland target)
+  the equivalent is an EDID-injected dummy output (one-time kernel/initramfs setup, documented in
+  `docs/linux/LEARNINGS.md` §11/§16/§17) that Sunshine enables/disables/mode-switches at session
+  start/stop via `kscreen-doctor`, replacing the hand-rolled `global_prep_cmd` scripts validated
+  there with native code. Non-KDE compositors degrade gracefully rather than failing the stream.
+* **RTSS & NVIDIA Control Panel frame limiting → MangoHud + NVIDIA env vars.** Windows drives RTSS
+  via DLL-hook injection and NVCP via NVAPI driver-settings ordinals. Linux capture already paces
+  to the stream's target FPS, so the remaining gap is capping the game's own render loop and
+  toggling vsync/prerender-limit — done via MangoHud's config-driven FPS limiter plus
+  `__GL_SYNC_TO_VBLANK`/`__GL_MaxFramesAllowed` set on the launched process's environment. NVIDIA
+  parity is inherently weaker on Linux (no NVAPI-equivalent system-wide toggle).
+* **Playnite Integration → Steam library sync (Lutris planned next).** Playnite itself has no
+  Linux port, so this isn't a port — it's a new integration targeting Linux-native launchers.
+  Steam ships first since it needs no companion process (local `.vdf`/`.acf` file parsing only,
+  launch via `steam://rungameid/<appid>`); the portable JSON protocol/reconciliation logic from
+  the Playnite implementation is being generalized so Lutris (and eventually a real Playnite path,
+  if one ever exists on Linux) can reuse the same core.
+
+This mapping work is tracked as an active implementation effort, not yet shipped — see
+`docs/linux/LEARNINGS.md` for what's already validated by hand on real hardware.
+
 ## What is Vibepollo?
 
 Vibepollo is an AI‑enhanced version of Apollo, a popular remote streaming application. It intends to integrate all scripts from myself (Nonary) and more.

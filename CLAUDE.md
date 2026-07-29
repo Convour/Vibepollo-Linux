@@ -13,6 +13,17 @@ architecture: cosmetic/stylistic debt is accepted deliberately, but architectura
 new code to that same bar rather than "fixing" style inconsistencies as a side effect of
 unrelated changes.
 
+**This fork's specific purpose (Vibepollo-Linux):** upstream Vibepollo's active development is
+almost entirely Windows-oriented — the Linux build path existed in CMake/CI config but had never
+been build-tested end-to-end and did not compile out of the box. This fork's focus is the inverse:
+get and keep Vibepollo genuinely working on Linux (developed/validated against Arch/CachyOS +
+NVIDIA + KDE Plasma/Wayland), and close the gap on the Windows-only feature set listed under
+"Vibepollo-specific feature map" below by mapping each one to a Linux-native mechanism rather than
+treating it as a permanent platform limitation. See the README's "Closing the Windows-only feature
+gap on Linux" section for the current mapping, and `docs/linux/AGENTS.md` /
+`docs/linux/LEARNINGS.md` for build fixes and machine setup discovered along the way. This is a
+personal fork tracking a different goal than upstream, not a request for upstream to change focus.
+
 **`architecture.md`** (repo root) is the authoritative deep-dive on runtime architecture (thread
 model, mailbox coordination) and a full code-level walkthrough of the WebRTC streaming pipeline
 (signaling, ICE, media bridging, data-channel input). Read it before working on streaming,
@@ -106,29 +117,46 @@ truth for this fork.
 
 ## Vibepollo-specific feature map
 
-These are additions on top of upstream Sunshine/Apollo; upstream docs won't mention them.
+These are additions on top of upstream Sunshine/Apollo; upstream docs won't mention them. Three of
+these are currently Windows-only; each has a portable core already, and this fork is actively
+mapping them to Linux-native equivalents (see README "Closing the Windows-only feature gap on
+Linux" and the plan tracked for this work) rather than leaving them permanently unavailable here.
 
-**Playnite integration** (syncs Playnite's game library into Sunshine's app list):
+**Playnite integration** (syncs Playnite's game library into Sunshine's app list) — **Windows
+only; Linux equivalent in progress, targeting Steam first (no Linux port of Playnite exists, so
+this is a new integration, not a port):**
 `src/platform/windows/playnite_integration.cpp` (lifecycle owner), `playnite_ipc.cpp` /
 `playnite_protocol.cpp` (named-pipe IPC to a Playnite-side plugin), `playnite_sync.cpp`
 (reconciles Playnite library into `apps.json`), `src/config_playnite.cpp` (config),
 `src/confighttp_playnite.cpp` (REST endpoints), `plugins/playnite/SunshinePlaynite/` (the
 Playnite-side PowerShell plugin), `tools/playnite_launcher/` (standalone launch/cleanup helper
-binary), `configs/tabs/Playnite.vue` (UI).
+binary), `configs/tabs/Playnite.vue` (UI). The JSON protocol schema and `apps.json` reconciliation
+logic in `playnite_protocol.cpp`/`playnite_sync.cpp` are platform-agnostic and are being
+generalized into `src/library_sync/` so a Linux Steam-library backend (local `.vdf`/`.acf`
+parsing, no companion process) can reuse them; Lutris is the planned second target.
 
-**Virtual display / display automation** (Windows only): `src/display_device.cpp`
-(cross-platform abstraction that picks a backend), `src/platform/windows/display_helper_integration.cpp`
+**Virtual display / display automation** — **Windows only; Linux equivalent in progress,
+formalizing a hand-validated `kscreen-doctor`/EDID workflow (see `docs/linux/LEARNINGS.md`
+§11/§16-18) instead of reproducing the Windows driver model:** `src/display_device.cpp`
+(cross-platform config-parsing abstraction; non-Windows platforms currently get explicit no-ops,
+per the comment at the top of the file), `src/platform/windows/display_helper_integration.cpp`
 + `display_helper_coordinator.cpp` + `display_helper_watchdog.cpp` (out-of-process display
 helper: apply/revert/retry, supervised), `virtual_display_sunshine.cpp` (bundled native driver,
 default), `virtual_display_sudovda.cpp` (SudoVDA rollback backend), `virtual_display_legacy.cpp`
 (pre-SudoVDA compat path), `virtual_display_cleanup.cpp` (crash recovery of the physical display
-if Sunshine dies with a virtual display active).
+if Sunshine dies with a virtual display active). The Linux path (planned: `src/platform/linux/
+display_device.cpp`) targets KDE Plasma/Wayland via `kscreen-doctor`, driving an EDID-injected
+dummy output rather than a kernel-mode driver; the EDID/bootloader setup itself stays a documented
+manual step, not something the daemon automates.
 
-**RTSS & NVIDIA Control Panel frame limiting** (Windows only):
+**RTSS & NVIDIA Control Panel frame limiting** — **Windows only; Linux equivalent in progress via
+MangoHud + NVIDIA env vars (Linux capture already paces to the stream's target FPS, so the actual
+gap is game-render-loop capping and vsync/prerender-limit toggles, not stream cadence):**
 `src/platform/windows/rtss_integration.cpp` (RTSS profile/hook management via
 `RTSSHooks(64).dll`), `frame_limiter_nvcp.cpp` (NVCP low-latency/vsync/frame-limit toggles),
-`src/framegen_policy.h` (arbitrates which limiter applies), `src/confighttp_rtss.cpp` (REST
-endpoints).
+`src/framegen_policy.h` (platform-agnostic policy computation, arbitrates which limiter applies —
+reused as-is on Linux), `src/confighttp_rtss.cpp` (REST endpoints; JSON schema is generic enough
+to serve a Linux backend without changes).
 
 **Session history / host stats**: `src/session_history*.cpp` (recorded per-session stats),
 `src/host_stats.cpp` (live CPU/GPU/mem sampling) — both feed the web UI's Stats view.

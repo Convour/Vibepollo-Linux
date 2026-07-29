@@ -715,3 +715,131 @@ context.properties = {
 ```
 FILES=(/usr/lib/firmware/edid/samsung-q800t-hdmi2.1)
 ```
+
+---
+
+## 23. From-Scratch Build on a Second Machine (RTX 3070, GCC 16, CUDA 13.3, no prior setup)
+
+Everything above (§1-22) came from a machine that already had a working build. This section
+documents what it took to go from a completely fresh clone + fresh CachyOS install (no Boost, no
+CUDA, no Vibepollo deps at all) to a running, streaming daemon. See §10/§11 in `AGENTS.md` for the
+two machines' specs side by side — the physical-display machine here has **no** virtual display
+configured; that's deliberately out of scope for this pass.
+
+### Submodules can silently land on the wrong commit
+`git submodule update --init --recursive`, especially when given a path-limited pathspec (e.g. to
+skip the large Windows-only `third-party/libwebrtc`/`third-party/depot_tools`), left most
+submodules — including a **nested** one two levels down,
+`third-party/build-deps/third-party/FFmpeg/x265_git` — checked out at their upstream branch tip
+instead of the commit actually pinned in the superproject's tree. `git submodule status` shows
+this as a `+`/`-` prefix instead of a clean commit line. The objects for the correct commit are
+already fetched during init, so the fix is cheap and doesn't need a re-clone:
+```bash
+git submodule status                                    # look for +/- prefixes
+git submodule update --force -- <path> [<path> ...]      # re-checkout the pinned commit
+# for a nested mismatch, cd into the parent submodule first and repeat there
+```
+Building against the wrong submodule commit doesn't fail loudly — it just silently compiles
+different third-party code than what's actually pinned, which can produce subtle bugs. Always
+verify `git submodule status` is clean before trusting a build.
+
+### glad's Python dependency vs. Arch's PEP 668
+See the updated §1 "glad's Python deps" section in `AGENTS.md` — short version: glad's own code
+imports `pkg_resources` (not just jinja2), Arch's `python-setuptools` 83.x dropped it, and Arch
+blocks `pip install` into the system Python outright. A disposable venv +
+`-DGLAD_SKIP_PIP_INSTALL=ON -DPython_EXECUTABLE=<venv python>` is the sanctioned escape hatch —
+this exact mechanism already existed in `cmake/dependencies/glad.cmake` for Flatpak/Homebrew
+builds, it just wasn't documented for a plain Arch system-Python case.
+
+### CUDA host-compiler version mismatch causes a *link*-time ABI error, not a compile error
+Arch's `cuda` package (13.3.1) installs a dedicated `gcc15` and points `nvcc` at it via
+`$NVCC_CCBIN` in `/etc/profile.d/cuda.sh`, because `nvcc` enforces a maximum supported host-GCC
+version and Arch's system `gcc` (16.x) is newer than CUDA 13.3 officially supports. Using that
+gcc15 detour compiles fine, but the CUDA CMake machinery then adds `-L
+/usr/lib/gcc/x86_64-pc-linux-gnu/15.x` to the *link* command ahead of the system compiler's own
+implicit library path. Combined with this project's `-static-libstdc++`, the linker resolves the
+static libstdc++ from gcc15's directory — which is *older* than the libstdc++ every other object
+file was compiled against (by the system's default, newer gcc16 `c++`) — and is missing a symbol
+version those objects need:
+```
+/usr/bin/ld: .../main.cpp.o: undefined reference to symbol '_ZNSt8__detail13__notify_implEPKvbRKNS_16__wait_args_baseE@@GLIBCXX_3.4.35'
+/usr/bin/ld: /usr/lib/libstdc++.so.6: error adding symbols: DSO missing from command line
+```
+The fix is to skip the gcc15 detour entirely and let `nvcc` accept the system's own `g++` via its
+official escape hatch, `--allow-unsupported-compiler`:
+```bash
+export PATH=/opt/cuda/bin:$PATH
+cmake -B build -G Ninja -S . \
+  -DSUNSHINE_ENABLE_CUDA=ON \
+  -DCMAKE_CUDA_COMPILER=/opt/cuda/bin/nvcc \
+  -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++ \
+  -DCMAKE_CUDA_FLAGS="--allow-unsupported-compiler"
+```
+**Important:** if you already ran `cmake` once with the gcc15 host compiler, you must delete
+`build/CMakeCache.txt` before switching — CMake's CUDA ABI/implicit-link-directory detection is
+cached and does not get re-run just because `CMAKE_CUDA_HOST_COMPILER` changed on a later
+`cmake -B build` invocation; the stale `-L .../15.x` will keep appearing on the link line.
+
+### Six source bugs, fixed on `master` (commit `55a98064`)
+None of these are Linux-specific hacks — they're genuine cross-platform correctness bugs that
+apparently never got exercised because Linux was never build-tested:
+
+1. **`cmake/compile_definitions/linux.cmake`** hardcoded glad source paths
+   (`third-party/glad/src/egl.c` etc.) that don't exist — the newer generator-based glad CMake
+   integration (`cmake/dependencies/glad.cmake`) writes generated sources out-of-tree under
+   `${CMAKE_BINARY_DIR}/gladsources/...` and compiles them into a proper `glad` library target
+   that's already linked via `SUNSHINE_EXTERNAL_LIBRARIES`. The hardcoded list was redundant and
+   pointed at nonexistent files — removed.
+2. **`src/nvhttp.cpp`**: `has_active_or_stopping_stream_session()` was defined inside an
+   `#ifdef _WIN32` block (alongside genuinely Windows-only virtual-display cleanup code) but
+   called from code outside that block too. It only checks `rtsp_stream`/`stream::session`/
+   `webrtc_stream` state, none of which is Windows-specific — hoisted above the `#ifdef`.
+3. **`src/video.cpp`**: same pattern — `encode_session_teardown_mutex` and
+   `native_amf_lifecycle_gate` (from the platform-independent `src/amf/amf_lifecycle.h`) were
+   declared inside an unrelated `#ifdef _WIN32` block, then used from AMF encoder-lifecycle code
+   that runs on all platforms. Hoisted above the `#ifdef`.
+4. **`src/nvenc/nvenc_config.h`**: the `nvenc_config` struct had a field literally named
+   `split_encode_mode` of type `split_encode_mode` (the enum). Legal C++ (the member hides the
+   type name from that point on), but GCC 16 promotes `-Wchanges-meaning` to a hard error for it.
+   Renamed the field to `split_encode_mode_value` (two call sites in `config.cpp`/
+   `nvenc_base.cpp` updated); the external config key (`nvenc_split_encode`) was unaffected since
+   it's a separate string, not tied to the field name.
+5. **`src/nvenc/nvenc_base.cpp`**: `saved_init_params.encodeGUID == NV_ENC_CODEC_HEVC_GUID` don't
+   compile — this platform's `GUID` (from `third-party/nv-codec-headers`) has no `operator==`.
+   The file already had an `equal_guids()` memcmp-based helper for exactly this; used it instead.
+6. **`src/platform/common.h`**: `platf::mem_type_e` was missing a `vulkan` enumerator that
+   `src/platform/linux/pipewire.cpp`, `kmsgrab.cpp`, and `vulkan_encode.cpp` already referenced —
+   Vulkan capture support was half-wired. Added the enumerator.
+7. **`src/platform/linux/host_stats.cpp`**: a typo'd member reference, `_shutdown` (never
+   declared) instead of the actual declared member `nvmlShutdown`. Fixed the 4 references.
+8. **`src/platform/linux/publish.cpp`**: `platf::SERVICE_TYPE` is a `std::string_view`; avahi's
+   `entry_group_add_service()` wants `const char*`. Added `.data()` (safe here since it's always
+   constructed from a string literal, so it's guaranteed null-terminated).
+
+### `cmake --install` partially fails without root — install the rest manually
+`cmake --install build` installs the binary/assets to the user prefix fine, but its last three
+steps (`udev` rule, systemd user unit, `modules-load.d` entry) target `/usr/lib/...` and need
+root — it fails with a `CMake Error: file INSTALL cannot copy file ... Permission denied` on the
+first one, aborting before the other two. Finish them manually:
+```bash
+sudo install -Dm644 src_assets/linux/misc/60-sunshine.rules /usr/lib/udev/rules.d/60-sunshine.rules
+sudo install -Dm644 build/app-dev.lizardbyte.app.Sunshine.service \
+    /usr/lib/systemd/user/app-dev.lizardbyte.app.Sunshine.service
+sudo install -Dm644 src_assets/linux/misc/60-sunshine.conf /usr/lib/modules-load.d/60-sunshine.conf
+sudo udevadm control --reload && sudo udevadm trigger && sudo modprobe uhid
+```
+
+### The installed systemd unit's `ExecStart=sunshine` fails with `status=203/EXEC`
+The vendored unit uses a bare command name, relying on `$PATH`. systemd's user-manager `PATH`
+does not include `~/.local/bin`, so the service fails to even exec the binary, despite the binary
+running fine from an interactive shell. Override with an absolute path (see §5 above for the full
+override file) — this is not optional for a `~/.local`-prefixed install.
+
+### `uaccess`-tagged devices don't need a fresh login for group membership
+Adding a user to `input`/`render` via `usermod -aG` normally requires logging out and back in
+before the new group membership is active in any existing session. But `/dev/uinput` and
+`/dev/uhid` carry the `uaccess` udev tag (from `60-sunshine.rules`), which means `systemd-logind`
+grants the *active seat session's* user a POSIX ACL directly on the device node — check with
+`getfacl /dev/uinput`. If a `user:<name>:rw-` ACL entry is already present, input device access
+works immediately without waiting for group membership to take effect; only things gated purely
+by *group* ownership (with no `uaccess` tag) still need the fresh login.

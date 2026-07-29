@@ -1,4 +1,17 @@
-# Vibepollo
+# Vibepollo-Linux
+
+## What is this fork?
+
+Vibepollo-Linux is a Linux-focused fork of [Nonary's Vibepollo](https://github.com/Nonary/Vibepollo).
+Upstream Vibepollo's active development is almost entirely Windows-oriented (Playnite integration,
+native virtual display, RTSS/NVCP frame limiting) — the Linux build path exists in the CMake/CI
+config but had never actually been build-tested end-to-end, and did not compile out of the box.
+
+The goal here is the inverse focus: get and keep Vibepollo actually working on Linux, with the same
+kind of streaming quality and feature set Windows users get from upstream, starting from a real
+Arch/CachyOS + NVIDIA + Wayland desktop. See **`docs/linux/AGENTS.md`** and **`docs/linux/LEARNINGS.md`**
+for the concrete build fixes and machine setup steps discovered so far, kept up to date as this
+fork progresses. This is a personal fork, not a request for upstream to change focus.
 
 ## What is Vibepollo?
 

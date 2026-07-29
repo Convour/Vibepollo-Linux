@@ -18,32 +18,137 @@ For full details on every topic, see **`LEARNINGS.md`**. This file is the quick-
 
 ## 1. Building on Linux (Arch / CachyOS)
 
+> **Note:** Section 1 below reflects a from-scratch build verified on a *different* physical
+> machine than the "Reference Machine" in §10 (RTX 3070, driver 610, kernel 7.1.5, no CUDA
+> preinstalled, GCC 16 as system compiler). Package names and workarounds here supersede the old
+> Boost-1.89 patch table further down — Boost is FetchContent'd by CMake (1.89.0 pinned) and no
+> longer needs manual patching or a system package.
+
 ### Required packages
+Note there is no root `package.json` — `npm`/`nodejs` are only needed for the CMake-driven
+frontend build step, not for manual `npm` usage.
 ```bash
 sudo pacman -S cmake ninja gcc cuda nvidia-utils libva libdrm \
     avahi miniupnpc openssl opus libpulse pipewire libevdev \
-    libcap libnotify npm doxygen graphviz boost
+    libcap libnotify nodejs npm python-jinja python-setuptools
+```
+Do **not** install a system `boost` package — CMake's `Boost_Sunshine.cmake` FetchContents
+1.89.0 automatically when no matching system package is found, and that's the working path.
+
+### Submodules: init, then verify pinned commits
+```bash
+git submodule update --init --recursive
+```
+On at least one Arch/CachyOS setup, `git submodule update --init --recursive` (especially when
+combined with a path-limited pathspec) left several submodules checked out at their upstream
+branch tip instead of the commit actually pinned by the superproject — including a **nested**
+submodule two levels down (`third-party/build-deps/third-party/FFmpeg/x265_git`). This silently
+compiles the wrong third-party code. Always verify after init:
+```bash
+git submodule status   # any leading +/- means a mismatch, not a clean pinned checkout
+git submodule update --force   # re-checks-out the recorded commit; objects are already fetched
 ```
 
-### Build commands
+### glad's Python deps (jinja2 + pkg_resources) vs. Arch's PEP 668 lock
+CMake's `cmake/dependencies/glad.cmake` pip-installs `jinja2`/`setuptools<81` at configure time if
+they're not importable, and glad's generator (`glad/plugin.py`) genuinely imports `pkg_resources`
+at generation time (not just an overcautious check). Arch's system Python blocks `pip install`
+outright (PEP 668 "externally-managed-environment"), and Arch's current `python-setuptools` (83.x)
+has already dropped `pkg_resources`, so even installing the pacman package doesn't satisfy the
+check. Fix: build a throwaway venv with the older setuptools pin, and use the CMake escape hatch
+built for exactly this (Flatpak/Homebrew sandboxed builds):
 ```bash
-cd ~/vibeshine-build
-mkdir -p build && cd build
-cmake .. \
+python3 -m venv ~/.cache/vibepollo-glad-venv
+~/.cache/vibepollo-glad-venv/bin/pip install --quiet --upgrade \
+    -r third-party/glad/requirements.txt "setuptools<81"
+```
+Then pass `-DGLAD_SKIP_PIP_INSTALL=ON -DPython_EXECUTABLE=~/.cache/vibepollo-glad-venv/bin/python`
+to every `cmake -B build` invocation below.
+
+### Build commands — pass 1, no CUDA (validates the core build first)
+```bash
+cmake -B build -G Ninja -S . \
+  -DCMAKE_INSTALL_PREFIX=~/.local \
+  -DSUNSHINE_ENABLE_CUDA=OFF -DCUDA_FAIL_ON_MISSING=OFF \
+  -DGLAD_SKIP_PIP_INSTALL=ON -DPython_EXECUTABLE=~/.cache/vibepollo-glad-venv/bin/python
+ninja -C build
+```
+If CMake configure fails on a submodule's `cmake_minimum_required(VERSION <3.5)` (CMake ≥4 made
+this a hard error), add `-DCMAKE_POLICY_VERSION_MINIMUM=3.5`.
+
+Six source-level bugs blocked this on a fresh clone as of `48b88477` — all fixed on `master`
+(commit `55a98064`, "fix(linux): fix build/runtime bugs blocking a Linux build"): a stale glad
+source-path list in `cmake/compile_definitions/linux.cmake`, two functions accidentally trapped
+inside `#ifdef _WIN32` in `nvhttp.cpp`/`video.cpp` despite being called from cross-platform code,
+a GCC-16 `-Wchanges-meaning` hard error from an nvenc struct field shadowing its own enum type
+name, a missing `vulkan` enumerator on `platf::mem_type_e`, a typo'd member reference in
+`host_stats.cpp`, and a `string_view`→`const char*` mismatch in `publish.cpp`. If you're building
+from a commit before that fix, cherry-pick it first.
+
+### Build commands — pass 2, enable CUDA
+Arch's `cuda` package pulls in a dedicated `gcc15` as `nvcc`'s host compiler (via
+`$NVCC_CCBIN` in `/etc/profile.d/cuda.sh`) because `nvcc` caps the GCC versions it officially
+supports, and Arch's own system `gcc` (16.x as of this writing) is newer than any CUDA 13.3
+supports. **Don't use that gcc15 detour** — it works for compiling `.cu` files, but the final
+*link* step then picks up `-L .../gcc/.../15.x` ahead of the system compiler's own lib dir, and
+with `-static-libstdc++` that resolves to gcc15's *older* static libstdc++, which is missing a
+libstdc++ symbol version (`GLIBCXX_3.4.35`) that the rest of the binary (compiled by the system's
+newer default `g++`) requires — an `undefined reference` at link time, not a compile error.
+
+The clean fix is `nvcc --allow-unsupported-compiler`, which lets `nvcc` accept the system's
+default `g++` directly, so there's no compiler split and no ABI mismatch:
+```bash
+export PATH=/opt/cuda/bin:$PATH
+cmake -B build -G Ninja -S . \
   -DCMAKE_INSTALL_PREFIX=~/.local \
   -DSUNSHINE_ENABLE_CUDA=ON \
-  -DCUDA_TOOLKIT_ROOT_DIR=/opt/cuda
-cmake --build . --parallel
-cmake --install .
+  -DCMAKE_CUDA_COMPILER=/opt/cuda/bin/nvcc \
+  -DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++ \
+  -DCMAKE_CUDA_FLAGS="--allow-unsupported-compiler" \
+  -DGLAD_SKIP_PIP_INSTALL=ON -DPython_EXECUTABLE=~/.cache/vibepollo-glad-venv/bin/python
+ninja -C build
 ```
+If you already configured once with the gcc15 host compiler, delete `build/CMakeCache.txt` before
+switching — CMake caches CUDA ABI/implicit-link-dir detection and won't recompute it just because
+`CMAKE_CUDA_HOST_COMPILER` changed.
 
-### After install — set capabilities (required for KMS capture)
+### Install + capabilities
 ```bash
-sudo setcap cap_sys_admin+p ~/.local/bin/sunshine
+cmake --install build
+sudo setcap cap_sys_admin+p ~/.local/bin/sunshine   # required for `capture = kms`
+```
+`cmake --install` also tries to install a udev rule, a systemd user unit, and a modules-load.d
+entry to `/usr/lib/...` — these need root and will fail silently-ish (a `CMake Error` at the very
+end, after everything else installed fine) if run as a normal user. Install them manually:
+```bash
+sudo install -Dm644 src_assets/linux/misc/60-sunshine.rules /usr/lib/udev/rules.d/60-sunshine.rules
+sudo install -Dm644 build/app-dev.lizardbyte.app.Sunshine.service \
+    /usr/lib/systemd/user/app-dev.lizardbyte.app.Sunshine.service
+sudo install -Dm644 src_assets/linux/misc/60-sunshine.conf /usr/lib/modules-load.d/60-sunshine.conf
+sudo udevadm control --reload && sudo udevadm trigger
+sudo modprobe uhid
 ```
 
-### Boost 1.89+ patches (already applied on `fix/linux-build-boost-1.89`)
-If building on a fresh clone and seeing Boost errors:
+### systemd user service: ExecStart needs an absolute path
+The installed unit ships `ExecStart=sunshine` (bare command name). systemd's user-manager `PATH`
+does not include `~/.local/bin`, so this fails with `status=203/EXEC` even though the binary
+installed and runs fine manually. Fix with an override:
+```bash
+mkdir -p ~/.config/systemd/user/app-dev.lizardbyte.app.Sunshine.service.d
+cat > ~/.config/systemd/user/app-dev.lizardbyte.app.Sunshine.service.d/override.conf << 'EOF'
+[Service]
+ExecStart=
+ExecStart=/home/$USER/.local/bin/sunshine
+EOF
+systemctl --user daemon-reload
+systemctl --user enable --now app-dev.lizardbyte.app.Sunshine.service
+```
+
+### Boost 1.89+ (historical — already merged into `master`, no action needed)
+The patches below were required on an older commit and are now part of `master` (verified via
+`process_start_dir`, the `stdio.hpp`/`start_dir.hpp` includes, and the `_WIN32`/
+`SUNSHINE_ENABLE_WEBRTC` guards already present in the files listed). Kept here only as a record
+in case a very old branch/tag still needs them.
 
 | File | Fix |
 |------|-----|
@@ -273,7 +378,12 @@ avahi-browse -r _nvstream._tcp -t
 
 ---
 
-## 10. System Info (Reference Machine)
+## 10. System Info (Reference Machine — virtual display / EDID setup, §2-3)
+
+This machine's virtual-display setup (custom EDID on HDMI-A-2, Lenovo Y700 tablet target) is
+**not** the same physical machine as the build verified in §1 below it — connector names, EDID
+files, and `kscreen-doctor` scripts here won't apply as-is to a different box. Re-derive connector
+names from `/sys/class/drm/*/status` before reusing any of §2/§3 elsewhere.
 
 | Component | Value |
 |-----------|-------|
@@ -289,3 +399,22 @@ avahi-browse -r _nvstream._tcp -t
 | Physical monitor | HDMI-A-1, Samsung LS27A600U, 2560x1440@75Hz |
 | Virtual display | HDMI-A-2, 2560x1600@120Hz (EDID firmware) |
 | Streaming target | Lenovo Y700 tablet, 2560x1600, 120Hz |
+
+## 11. System Info (Build/run verified, §1 above)
+
+Physical-display-only setup (no virtual display) — the build and NVENC/KMS fixes in §1 were
+verified end-to-end on this machine.
+
+| Component | Value |
+|-----------|-------|
+| OS | CachyOS (Arch Linux) |
+| Kernel | 7.1.5-1-cachyos |
+| CPU | AMD Ryzen 7 5800X |
+| GPU | NVIDIA GeForce RTX 3070 (Ampere — no AV1 NVENC) |
+| Driver | 610.43.03 |
+| CUDA | 13.3.1 (`pacman -S cuda`, at /opt/cuda) |
+| System compiler | GCC 16.1.1 (nvcc host compiler via `--allow-unsupported-compiler`, see §1) |
+| Display server | Wayland (KDE Plasma 6.7.3, `kwin_wayland`) |
+| Monitor | ASUS VG32VQ1B, 2560x1440@164.55Hz, DisplayPort (`DP-1`) |
+| Capture | `kms` (KMS/DRM), `cap_sys_admin` via setcap |
+| Encoder | `nvenc` — H.264/HEVC confirmed working, AV1 unsupported by this GPU |

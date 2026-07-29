@@ -912,3 +912,87 @@ Do not "fix" this by passing `std::vector<v2::environment::key_value_pair>` inst
 path. Do not cache the buffer as a `mutable` member of `basic_environment` mutated from a `const`
 method either — `process.cpp` passes long-lived `_env` members into `run_command()` from multiple
 call sites, so a shared mutable buffer risks a data race across concurrent launches.
+
+## 24. Full Feature-Set Audit (2026-07-29): Live Verification of Virtual Display, Frame Limiting, Steam Sync
+
+A full pass verifying every entry in the "Vibepollo-specific feature map" (see root `CLAUDE.md`)
+against a rebuilt, reinstalled, freshly-restarted service — not just source review. Full findings
+doc: `verify-vibepollo-linux-feature-set-audit.md` was the stale draft; this session's complete
+report lives outside the repo at the time of writing, but the load-bearing findings are captured
+here for anyone building on this work later.
+
+### `CAP_SYS_ADMIN` is lost on every reinstall — this is not a one-time setup step
+
+`cmake --install` does not reapply `setcap`. Any reinstall (including CI-adjacent local rebuilds)
+silently breaks KMS capture until `sudo setcap cap_sys_admin+p ~/.local/bin/sunshine-<version>` is
+rerun. Confirmed via `getcap` before/after and a clean journal (no `CAP_SYS_ADMIN` errors, both
+`h264_nvenc`/`hevc_nvenc` probe successfully) after reapplying. Treat this as a required
+post-reinstall step every time, not a first-run-only fix — see "Install + capabilities" in
+`AGENTS.md`.
+
+### Frame limiting (`src/platform/linux/frame_limiter.cpp`) — confirmed working end-to-end
+
+`frame_limiter_enable` defaults to `false` (not present in a stock `sunshine.conf`), so the
+feature is inert unless explicitly turned on. With it enabled, launching an app that dumps its own
+environment to a file showed the real injected values in the child process:
+```
+__GL_SYNC_TO_VBLANK=0
+MANGOHUD_CONFIG=fps_limit=60000
+```
+This confirms the mechanism itself works, not just that the code compiles. Caveats that still
+apply: MangoHud's FPS cap only takes effect if the launched app's own command already runs under
+MangoHud (no `LD_PRELOAD` force-injection); the NVIDIA path only toggles vsync, there's no real
+Linux equivalent of NVCP's FPS cap; there is still no `/api/rtss/status`-equivalent endpoint on
+Linux, so `FrameLimiterStep.vue` (unmodified, still Windows-shaped) points at a `404` if a Linux
+user tries to use it from the Web UI.
+
+### Steam library sync (`src/platform/linux/steam_library.cpp`) — backend confirmed live, no frontend yet
+
+`GET /api/steam/status` against a real Steam installation returned 141 correctly-discovered
+installed games. `POST /api/steam/sync` (the actual `apps.json`-mutating endpoint) was
+deliberately not exercised in a verification pass, since it writes real data. There is currently
+**no web UI** for this feature at all — confirmed no `steamApi.ts`/`LibrarySync.vue` and no
+router entry exist yet; the only way to trigger a sync today is a direct authenticated
+`curl POST /api/steam/sync` call.
+
+### Virtual display (`src/platform/linux/display_device.cpp`) — apply-side confirmed, revert-side still open
+
+Launching any app correctly invokes the apply hook at `process.cpp`'s `launch_app_commands()`
+(`Linux display device: no output_name configured; skipping virtual display automation.` when
+unconfigured, which is the safe/correct no-op). No session in this repo's history yet has
+exercised the **revert** path (`terminate()` → `revert_session_display`) — every test launch used
+either a no-op app or one whose process exits immediately, so `terminate()`'s revert branch never
+actually ran. Verifying revert needs a real long-running launched process, then a `close`/stop
+call, watched for the `"reverted to pre-session display arrangement"` log line. A true test against
+a real EDID virtual output (§11/§16-18 above) still requires a reboot with kernel params and
+remains undone.
+
+### A quick, low-risk way to observe env/config effects on a real launched process without a Moonlight client
+
+`POST /api/apps/launch` (with a session cookie from `POST /api/auth/login`) will launch any app
+in `apps.json` by `uuid` without a real streaming client — useful for exactly this kind of
+verification. Two gotchas:
+- It requires a `rikeyid` query-string param (e.g. `?rikeyid=0`) even for local/Web-UI-triggered
+  launches — `nvhttp.cpp`'s `make_launch_session()` has an unconditional `get_arg(args, "rikeyid")`
+  with no default late in the function, outside the guard that already skips key/IV setup for
+  local launches. This is pre-existing upstream code (`git blame` → commit `41cc08d5`), not
+  something the Linux port introduced, and it's currently dead/unused — no component in the
+  current Vue SPA calls `stores/apps.ts`'s `launchApp()` (only the pre-migration, inactive
+  `apps.html` does), and it isn't documented in `docs/api.md` either. Still worth a real fix, just
+  not urgent.
+- Launching the same `uuid` a second time while it's still "current" acts as a stop toggle
+  (sends `SIGTERM`, tears the app down) rather than relaunching — call `POST /api/apps/close`
+  first if you need a guaranteed-clean relaunch.
+- Any `cmd` you use for this kind of manual test needs an explicit shell wrapper
+  (`sh -c "... > /path"`) — commands run directly via `run_command()`, not through a shell, so
+  redirection operators are passed as literal argv to the target binary and silently do nothing.
+
+### `origin_web_ui_allowed = wan` combined with an all-interfaces bind is worth auditing on any box
+
+`ss -lntp` showed the config UI bound to `0.0.0.0:47990` (not loopback-only) with
+`origin_web_ui_allowed = wan` in `sunshine.conf` — the documented reference config in `AGENTS.md`
+uses `lan`. `upnp = on` but the journal logged repeated `Couldn't discover any IPv4 UPNP devices`,
+meaning automatic port-forwarding isn't active — this doesn't confirm the box is internet-exposed
+(a manual router forward can't be ruled out from the daemon side), but the app-layer safeguard
+that would normally restrict this to LAN-only is not what's actually configured. Worth checking
+deliberately on any machine following this doc, not assuming `wan` was intentional.

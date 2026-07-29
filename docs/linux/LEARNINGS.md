@@ -1010,3 +1010,89 @@ deliberately on any machine following this doc, not assuming `wan` was intention
 and restarted the service. Verified the fix didn't break loopback/authenticated access
 (`GET /api/metadata` with a valid session cookie still returns `200`; a `401` with no cookie is
 just the normal auth gate, not an origin block).
+
+## 25. Steam-Launched Games: Quitting In-Game Didn't End the Stream (2026-07-29)
+
+First real end-to-end use of Steam library sync (§24) surfaced a bug: launching a Steam game from
+a Moonlight client worked, but quitting the game in-game left the stream running, and ending the
+stream from the client left the game running on the host. Root cause and fix below; both
+directions confirmed live against a real Proton title (Brawlhalla) from a phone client.
+
+### Root cause: `auto-detach` was hiding the real problem
+
+`reconcile_games_into_apps()` generated `"cmd": "steam steam://rungameid/<appid>"` with
+`"auto-detach": true` (the default). `steam steam://rungameid/...` forwards the launch request to
+the already-running Steam client and exits within milliseconds — confirmed live
+(`Steam is already running, exiting (command line was forwarded)`). Sunshine's `auto_detach`
+handling (`process.cpp`'s `proc_t::running()`) sees this short-lived exit and flips the app to
+`placebo` mode: it stops tracking any process at all. This isn't a bug in that mechanism — it's
+working as designed for genuinely fire-and-forget launchers — but it means `terminate()` has no
+PID or process group to act on when the stream ends, and nothing to notice when the real game
+(which is a child of the *Steam client*, never of Sunshine) exits on its own.
+
+The Windows Playnite integration solves the same structural problem (Playnite's IPC never reports
+a PID either) with a small companion launcher binary that Sunshine tracks instead of the real
+launch target, which discovers the actual game PID itself and forward-kills it on termination.
+
+### The fix: `tools/steam_launcher/` — a Linux companion launcher, mirroring the Playnite pattern
+
+New binary `sunshine-steam-launcher`, installed alongside `sunshine` (`cmake/targets/linux.cmake`,
+`cmake/packaging/unix.cmake`; Linux/FreeBSD only). `steam_library.cpp` now generates
+`"cmd": "\"<path-to-launcher>\" <appid>"` with `"auto-detach": false` and `"wait-all": false`, so
+Sunshine tracks the launcher's own liveness directly (not "any process in a group", and not the
+5-second auto-detach placebo window). The launcher path is resolved via `/proc/self/exe`'s parent
+directory at reconciliation time, not a fixed prefix — works for both a standard install and a
+relocatable one. **If the launcher binary can't be found, reconciliation is skipped with a logged
+error rather than falling back to the old `steam://rungameid` cmd** — that fallback would silently
+reintroduce this exact bug.
+
+Existing `steam-managed: auto` entries are migrated in place on the next sync (not just newly
+discovered games) — confirmed live: all 141 previously-synced entries on this box had their `cmd`/
+`auto-detach`/`wait-all` rewritten by a single `POST /api/steam/sync` call, with no other fields
+(box art, manual edits) touched.
+
+### `/proc`-based process matching — validated live against both a native and a Proton title
+
+`SteamAppId=<appid>` (and `SteamGameId=<appid>`) in `/proc/<pid>/environ` is present on every
+process in the launch chain, native or Proton, all the way down to the real game engine binary —
+confirmed via live scans of both Portal (native) and Tetris Effect / Brawlhalla (Proton). This is
+the correct matching signal; cmdline parsing alone would miss most descendants.
+
+There is **no single fixed process-group boundary** to exclude. Portal (native) had one non-client
+process group; Brawlhalla and Tetris Effect (Proton) each had many — Wine/Proton's launch chain
+(`pv-adverb`, the Python Proton script, `steam.exe` shim, `wineserver`, `services.exe`, the actual
+`.exe`, and every DLL/subsystem process it starts) each got its own fresh process group. The
+correct algorithm, and what the launcher implements: capture the Steam client's own process group
+once at launcher startup, *before* requesting the launch (native Arch/CachyOS Steam runs the
+client itself as `comm == "steam"`); then treat every *other* distinct process group among
+`SteamAppId`-matching PIDs as part of the game. Steam's own launch-supervisor helpers (`reaper`,
+`srt-bwrap`) inherit the env var too but share the client's own process group — confirmed live —
+so excluding that one group is sufficient; no per-process allowlisting is needed.
+
+Steam's reaper/Proton scaffolding processes require no special handling: once the actual game's
+process group(s) are killed, `reaper`, `srt-bwrap`, `pv-adverb`, and the Proton Python wrapper all
+exit on their own, cleanly, without ever being signaled directly. The launcher therefore only
+forwards `SIGTERM` to the game's process group(s) on receiving its own termination signal and does
+not attempt a manual `SIGKILL` escalation — Sunshine's own process-group teardown
+(`terminate_process_group()` in `process.cpp`) may `SIGKILL` the launcher itself shortly after
+delivering that signal, so any escalation logic would be racing its own death. This was a
+deliberate scope decision, not an oversight.
+
+Quit-detection uses the same matching: once the game's process groups are first seen, 3
+consecutive empty polls (~1s apart) of "no PID anywhere carries this appid" means the game
+exited — the launcher then exits on its own, which is what ends the stream automatically. A
+120-second startup grace period (first-run shader precompilation / Proton DLL registration can
+take 30-60+ seconds) applies before the *first* match, so a slow-starting game is never mistaken
+for one that never launched.
+
+### Live verification (real Moonlight client, phone, Proton title)
+
+Both directions confirmed via `/proc` process-state polling correlated with the daemon's journal,
+not just the client's own behavior:
+- **Quit in-game → stream ends**: game process exited on its own; the tracked launcher noticed
+  (3 empty polls) and self-exited ~2s later; daemon logged `Process terminated` / `Session ended`
+  within the same second.
+- **End from client → game dies**: daemon sent `SIGTERM` to the tracked launcher; the launcher
+  forward-killed the game's process group(s) (game process died); the launcher exited right after.
+- **Steam client survived both tests untouched** (same PID throughout) — confirming the
+  client-process-group exclusion logic works correctly and doesn't take Steam itself down.

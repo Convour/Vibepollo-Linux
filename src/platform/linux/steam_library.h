@@ -2,8 +2,12 @@
  * @file src/platform/linux/steam_library.h
  * @brief Discovers installed Steam games by parsing Steam's local VDF/ACF library files, and
  * reconciles them into Sunshine's apps.json - a Linux-native equivalent of the Windows Playnite
- * integration (src/platform/windows/playnite_sync.h), but without any companion process: Steam
- * requires no IPC, just local file parsing plus a `steam://rungameid/<appid>` launch command.
+ * integration (src/platform/windows/playnite_sync.h). Games are launched through the
+ * `sunshine-steam-launcher` companion binary (tools/steam_launcher/) rather than a bare
+ * `steam://rungameid/<appid>` command: Steam forks the real game as a child of the
+ * already-running Steam client, never of Sunshine, so Sunshine has nothing to track or
+ * terminate without a proxy process in between (see the launcher's own file comment for the
+ * /proc-based process-matching this solves).
  */
 #pragma once
 

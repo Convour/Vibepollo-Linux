@@ -424,6 +424,10 @@ namespace confighttp {
           continue;
         }
 
+        if (key.rfind("steam_sync_", 0) == 0) {
+          continue;
+        }
+
         if (key.rfind("realtime_stats_", 0) == 0) {
           continue;
         }

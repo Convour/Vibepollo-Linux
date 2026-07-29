@@ -13,3 +13,7 @@ if(NOT CMAKE_INSTALL_PREFIX)
 endif()
 
 install(TARGETS sunshine RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+
+if(TARGET sunshine-steam-launcher)
+    install(TARGETS sunshine-steam-launcher RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+endif()

@@ -2298,7 +2298,18 @@ namespace proc {
     } else if (_app.wait_all && _process_group && platf::process_group_running((std::uintptr_t) _process_group.native_handle())) {
       // The app is still running if any process in the group is still running
       return _app_id;
-    } else if (_process.running()) {
+    } else if ([this] {
+      // Auto-detach launchers (e.g. `steam steam://rungameid/...`) commonly fork and exit
+      // within milliseconds. The POSIX zombie-reaper fail_guard above this function's caller
+      // can win the race and reap this exact PID via its blanket waitpid(-1, ...) before
+      // bp::child::running() gets to it, which makes the throwing overload raise
+      // boost::system::system_error("No child processes") - an uncaught exception here takes
+      // down the whole daemon. Use the non-throwing overload and treat any error (the process
+      // is already gone as far as the OS is concerned) as "not running".
+      std::error_code running_ec;
+      bool is_running = _process.running(running_ec);
+      return !running_ec && is_running;
+    }()) {
       // The app is still running only if the initial process launched is still running
       return _app_id;
     } else if (_app.auto_detach && std::chrono::steady_clock::now() - _app_launch_time < 5s) {
@@ -2589,12 +2600,20 @@ namespace proc {
         continue;
       }
 
+      // See the comment on the equivalent guard in the app-status polling path above:
+      // the throwing running() overload can raise on an already-reaped PID.
+      auto child_running = [&child] {
+        std::error_code running_ec;
+        bool is_running = child.running(running_ec);
+        return !running_ec && is_running;
+      };
+
       const auto deadline = std::chrono::steady_clock::now() + undo_timeout;
-      while (child.running() && std::chrono::steady_clock::now() < deadline) {
+      while (child_running() && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(100ms);
       }
 
-      if (child.running()) {
+      if (child_running()) {
         BOOST_LOG(warning) << "Undo command timed out after " << undo_timeout.count()
                            << " seconds; continuing teardown without waiting for completion.";
         try {

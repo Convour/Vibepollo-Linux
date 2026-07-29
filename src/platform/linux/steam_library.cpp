@@ -18,6 +18,8 @@
 
 #include "src/config.h"
 #include "src/logging.h"
+#include "src/utility.h"
+#include "src/uuid.h"
 
 using namespace std::literals;
 
@@ -235,6 +237,28 @@ namespace platf::steam_library {
     // independently launchable. There's no "is this a real game" bit in the manifest itself
     // (that classification lives in Steam's binary appinfo.vdf cache, not parsed here); filter
     // on the well-known naming patterns these packages use instead.
+    // The companion launcher (tools/steam_launcher/) that Sunshine tracks in place of a bare
+    // `steam://rungameid/<appid>` command - see steam_library.h and the launcher's own file
+    // comment for why a proxy process is required. Installed alongside the sunshine binary
+    // itself, so resolve it relative to the currently-running executable rather than assuming a
+    // fixed install prefix (works for both a standard install and an AppImage/relocatable one).
+    std::optional<fs::path> resolve_launcher_path() {
+      std::error_code ec;
+      const auto self = fs::read_symlink("/proc/self/exe", ec);
+      if (ec) {
+        return std::nullopt;
+      }
+      const auto candidate = self.parent_path() / "sunshine-steam-launcher";
+      if (fs::exists(candidate, ec)) {
+        return candidate;
+      }
+      return std::nullopt;
+    }
+
+    std::string launcher_cmd(const fs::path &launcher_path, const std::string &appid) {
+      return "\"" + launcher_path.string() + "\" " + appid;
+    }
+
     bool looks_like_runtime_package(const std::string &name, const std::string &install_dir) {
       static constexpr std::array<std::string_view, 4> name_prefixes {
         "Steam Linux Runtime"sv, "Proton"sv, "Steamworks Common Redistributables"sv, "Proton EasyAntiCheat Runtime"sv
@@ -323,6 +347,15 @@ namespace platf::steam_library {
   reconcile_result_t reconcile_games_into_apps(nlohmann::json &apps_array, const std::vector<game_t> &games, const config::steam_sync_t &cfg) {
     reconcile_result_t result;
 
+    const auto launcher_path = resolve_launcher_path();
+    if (!launcher_path) {
+      // Do not fall back to a bare `steam://rungameid` cmd here: that's the exact bug this
+      // launcher exists to fix (quitting the game never ends the stream, ending the stream never
+      // kills the game). A missing binary means the Linux build is broken, not a soft-degrade case.
+      BOOST_LOG(error) << "Steam library sync: sunshine-steam-launcher binary not found next to the running executable; skipping reconciliation.";
+      return result;
+    }
+
     if (!apps_array.is_array()) {
       apps_array = nlohmann::json::array();
     }
@@ -383,13 +416,26 @@ namespace platf::steam_library {
         }
       }
 
-      // Still installed: refresh name/box-art in case they changed, keep everything else
-      // (including any manual edits the user made to the entry) untouched.
+      // Still installed: refresh name in case it changed, keep everything else (including any
+      // manual edits the user made to the entry) untouched.
       const auto &game = *it->second;
       if (app.value("name", "") != game.name) {
         app["name"] = game.name;
         ++result.updated;
       }
+
+      // Migrate entries synced before the companion launcher existed (or before it was found on
+      // a previous run): rewrite the launch command and process-tracking flags so quit-detection
+      // and forward-kill actually take effect, without touching anything else the user may have
+      // customized on the entry.
+      const std::string expected_cmd = launcher_cmd(*launcher_path, game.appid);
+      if (app.value("cmd", "") != expected_cmd || app.value("auto-detach", true) || app.value("wait-all", true)) {
+        app["cmd"] = expected_cmd;
+        app["auto-detach"] = false;
+        app["wait-all"] = false;
+        ++result.updated;
+      }
+
       new_apps.push_back(app);
     }
 
@@ -399,9 +445,17 @@ namespace platf::steam_library {
       }
 
       nlohmann::json entry;
+      // process::parse() requires every app entry to carry a "uuid" (see process.cpp);
+      // without one here, the next apps.json load throws and forces an unnecessary
+      // full re-migration of the app list.
+      entry["uuid"] = uuid_util::uuid_t::generate().string();
       entry["name"] = game.name;
-      entry["cmd"] = "steam steam://rungameid/" + game.appid;
-      entry["auto-detach"] = true;
+      entry["cmd"] = launcher_cmd(*launcher_path, game.appid);
+      // Sunshine must track the launcher itself (not placebo-detach after 5 seconds, and not
+      // "any process in the group" - just the launcher's own liveness): it's the process that
+      // decides when the game has actually quit and forwards termination when the stream ends.
+      entry["auto-detach"] = false;
+      entry["wait-all"] = false;
       entry["steam-id"] = game.appid;
       entry["steam-managed"] = "auto";
       entry["steam-added-at"] = now_iso;

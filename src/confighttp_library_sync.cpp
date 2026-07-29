@@ -55,6 +55,11 @@ namespace confighttp {
     }
     print_req(request);
 
+    if (!config::steam_sync.enable) {
+      bad_request(response, request, "Steam library sync is disabled.");
+      return;
+    }
+
     nlohmann::json out;
     try {
       const auto games = platf::steam_library::discover_steam_games();

@@ -188,17 +188,19 @@ if [ -f "$GN_OUT_DIR/libwebrtc.so.TOC" ]; then
   cp -f "$GN_OUT_DIR/libwebrtc.so.TOC" "$OUT_DIR/lib/libwebrtc.so.TOC"
 fi
 
-# NOTE: unlike the Windows script, copying libwebrtc.so next to the sunshine
-# binary does NOT make the dynamic linker find it at runtime -- Linux has no
-# "search next to the executable" default the way Windows DLL loading does.
-# The sunshine target needs an $ORIGIN-relative RPATH (or the .so needs to be
-# installed to a directory already on the loader's search path) before this
-# is actually runnable; not yet wired into the CMake target as of this
-# script. Left as a TODO for the CMake wiring step, see
-# docs/linux/webrtc-linux-port-plan.md.
+# NOTE: this copy to the CMake binary dir is NOT what makes libwebrtc.so
+# loadable at runtime, unlike the Windows script's DLL copy. On Linux,
+# find_library() in cmake/dependencies/webrtc.cmake resolves WEBRTC_LIBRARY
+# to the full path under $OUT_DIR/lib set below, and CMake's default
+# build-tree RPATH behavior embeds that full path into the sunshine binary
+# automatically (verified 2026-07-29 -- see docs/linux/webrtc-linux-port-plan.md
+# §1b -- no $ORIGIN RPATH or extra CMake wiring needed for local dev builds).
+# This copy is just a convenience so tooling that expects a .so next to the
+# binary (e.g. packaging, later) has one; the actual dynamic-linker discovery
+# happens via $OUT_DIR/lib, not this location.
 CMAKE_BINARY_DIR="$ROOT_DIR/build"
 if [ -d "$CMAKE_BINARY_DIR" ]; then
-  log "Copying shared library to CMake build directory (does not set up runtime linking -- see NOTE above)"
+  log "Copying shared library to CMake build directory (convenience copy only -- see NOTE above)"
   cp -f "$SO_PATH" "$CMAKE_BINARY_DIR/libwebrtc.so"
 fi
 

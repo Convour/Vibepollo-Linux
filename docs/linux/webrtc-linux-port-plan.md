@@ -171,6 +171,16 @@ scenario every milestone here runs under) but would need an actual `$ORIGIN`-rel
 proper install step) before a *packaged/distributed* Linux binary could carry `libwebrtc.so`
 across machines. Deferred — packaging is out of scope until there's a working feature to package.
 
+**Scope of what this actually proves**: the cache dir this retest used
+(`~/.cache/vibeshine/deps/libwebrtc/out`) was populated by hand-copying the §1 trial build's
+artifacts there, matching `webrtc.cmake`'s documented default lookup path — not by running
+`scripts/build_linux_webrtc.sh` end to end (that script has still never been run as a whole; see
+milestone 2's note). So what's proven is "given a `libwebrtc.so` at the documented default
+location, CMake finds and links it with a working runtime path, no RPATH fix needed." What's not
+yet proven is that a clean-machine run of `scripts/build_linux_webrtc.sh` itself reliably produces
+and places that artifact — that's a build-script correctness question, not a CMake/RPATH one, and
+is a much smaller remaining unknown than the RPATH question was.
+
 ## 2. What in `webrtc_stream.cpp` is actually Windows-only
 
 Audited all ~25 `#ifdef _WIN32` blocks in the file. They fall into two buckets:

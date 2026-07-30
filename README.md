@@ -42,6 +42,55 @@ end-user outcome. Status reflects live verification on real hardware, not just c
   `docs/linux/webrtc-linux-port-plan.md`); still needs runtime linking (`$ORIGIN` RPATH) and an
   actual browser session test before this is real.
 
+## Building
+
+Submodules are required (~19, including googletest, libwebrtc, libdisplaydevice — see
+`.gitmodules`):
+
+```bash
+git clone --recurse-submodules <url>
+```
+
+### C++ / daemon
+
+```bash
+cmake -B build -G Ninja -S .
+ninja -C build
+```
+
+This also builds the web UI: `cmake/targets/common.cmake` wires an `npm ci` + `npm run build` step
+into the CMake target graph, so a full `ninja -C build` builds both halves. To iterate on the UI
+alone without rebuilding via CMake each time, use `npm run dev` inside
+`src_assets/common/assets/web/` instead.
+
+Key CMake options (`cmake/prep/options.cmake`):
+
+* `SUNSHINE_ENABLE_WEBRTC` — Windows-only, `OFF` by default; see "Closing the Windows-only feature
+  gap on Linux" above for the Linux trial-build status.
+* Linux capture backends — `SUNSHINE_ENABLE_CUDA` / `DRM` / `VAAPI` / `VULKAN` / `WAYLAND` / `X11`
+  / `KWIN` / `PORTAL` (all `ON` by default).
+* `BUILD_WERROR`, `BUILD_DOCS`, `SUNSHINE_ENABLE_TRAY`.
+
+Unit tests are disabled by repository policy (`BUILD_TESTS` is force-set `OFF`) — validate changes
+by compiling the affected target and performing runtime checks instead.
+
+### Frontend only (Vue/TS)
+
+There is no root `package.json` — everything runs from `src_assets/common/assets/web/`:
+
+```bash
+cd src_assets/common/assets/web
+npm ci
+npm run dev          # vite build --mode debug --watch
+npm run build         # production build
+npm run lint          # eslint --max-warnings 0
+npm run typecheck     # vue-tsc --noEmit
+```
+
+See `docs/building.md`, `docs/contributing.md`, and `docs/linux/AGENTS.md` /
+`docs/linux/LEARNINGS.md` for full prerequisites and Linux-specific build fixes/machine setup
+discovered along the way.
+
 ## What is Vibepollo?
 
 Vibepollo is an AI‑enhanced version of Apollo, a popular remote streaming application. It intends to integrate all scripts from myself (Nonary) and more.

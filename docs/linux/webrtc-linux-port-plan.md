@@ -1,14 +1,16 @@
 # WebRTC browser streaming on Linux — scoping notes (2026-07-29, updated 2026-07-29)
 
-**Status: milestones 1 and 2 done; milestone 3's premise turned out to be wrong (see §2b) — no
-new frame-delivery code needed.** `libwebrtc` builds clean for Linux, the CMake wiring finds and
-links it, and `src/webrtc_stream.cpp` compiles with `SUNSHINE_ENABLE_WEBRTC=1` on GCC/Linux with
-zero changes needed to that file. This started as a first-pass investigation into what porting
-`/webrtc` browser streaming to Linux would actually take, done after discovering the running dev
-service returns `Error: WebRTC: support is disabled at build time` (`src/webrtc_stream.cpp`)
-whenever a browser client posts an SDP offer, because `SUNSHINE_ENABLE_WEBRTC` is Windows-only and
-off by default (`cmake/prep/options.cmake:20`). What remains is an actual browser smoke test
-(milestone 4), still blocked on the `$ORIGIN` RPATH gap from §1b — see "Rough milestone plan".
+**Status: milestones 1-2 done; milestone 3's premise turned out to be wrong (see §2b, no new
+frame-delivery code needed); the RPATH gap milestone 4 was thought to be blocked on turned out not
+to exist either (see §1b retest).** `libwebrtc` builds clean for Linux, the CMake wiring finds and
+links it, `src/webrtc_stream.cpp` compiles with `SUNSHINE_ENABLE_WEBRTC=1` on GCC/Linux with zero
+changes needed to that file, and a full `sunshine` binary linked against it actually runs and
+loads `libwebrtc.so` at runtime out of the box. This started as a first-pass investigation into
+what porting `/webrtc` browser streaming to Linux would actually take, done after discovering the
+running dev service returns `Error: WebRTC: support is disabled at build time`
+(`src/webrtc_stream.cpp`) whenever a browser client posts an SDP offer, because
+`SUNSHINE_ENABLE_WEBRTC` is Windows-only and off by default (`cmake/prep/options.cmake:20`). What
+remains is an actual browser smoke test (milestone 4) — see "Rough milestone plan".
 
 **Headline finding: this is smaller than it looks at first glance.** `src/webrtc_stream.cpp` is
 ~5,940 lines and greps for D3D11/DXGI/COM look alarming, but the file already gates every
@@ -142,12 +144,32 @@ further and actually built `CMakeFiles/sunshine.dir/src/webrtc_stream.cpp.o` wit
 just a read of the source: no `#ifdef` branch in that ~5,940-line file had ever been compiled by
 anything other than MSVC before this.
 
-**Known gap, not yet addressed**: `libwebrtc.so` has no runtime story on Linux yet. The build
-script copies it next to the CMake binary dir the way the Windows script copies the DLL, but
-Linux's dynamic linker doesn't search next to the executable the way Windows DLL loading does —
-the `sunshine` CMake target needs an `$ORIGIN`-relative RPATH (or an install step putting the
-`.so` somewhere already on the loader's search path) before a built binary can actually load it at
-runtime. Not wired in yet; needed before milestone 4's smoke test.
+**Previously-documented "RPATH gap" was wrong — retest 2026-07-29**: this doc used to claim
+`libwebrtc.so` "has no runtime story on Linux yet" and needs an explicit `$ORIGIN` RPATH wired
+into the `sunshine` CMake target. That was reasoning from a Windows DLL-loading mental model, not
+a tested claim. Actually did the full link (`cmake -B build-webrtc-linktest ... -DSUNSHINE_ENABLE_WEBRTC=ON`
++ `ninja -C build-webrtc-linktest sunshine`, a separate build dir, not the real dev `build/`) and
+checked the result:
+
+```
+$ readelf -d sunshine-1.18.3-beta.6 | grep -i runpath
+ 0x000000000000001d (RUNPATH)  Library runpath: [/home/klebby/.cache/vibeshine/deps/libwebrtc/out/lib:]
+$ ldd sunshine-1.18.3-beta.6 | grep -i webrtc
+        libwebrtc.so => /home/klebby/.cache/vibeshine/deps/libwebrtc/out/lib/libwebrtc.so (0x...)
+```
+
+No "not found" entries, and `./sunshine --version` actually ran and started logging config values
+before being cut off. **CMake's default build-tree behavior already embeds an absolute RUNPATH to
+`WEBRTC_ROOT/lib`** whenever a library is linked via a full path from `find_library()` (the
+default unless `CMAKE_SKIP_BUILD_RPATH` is set, which this project doesn't set for Linux/UNIX —
+only the `APPLE` branch of `cmake/prep/init.cmake` touches RPATH settings at all). Nothing needed
+to change in `cmake/targets/linux.cmake` for the dev/build-tree case milestone 4 actually needs.
+
+The one real caveat, not a milestone-4 blocker: this RUNPATH is an *absolute path on the build
+machine* (`$HOME/.cache/vibeshine/...`), not a portable one. That's fine for local dev builds (the
+scenario every milestone here runs under) but would need an actual `$ORIGIN`-relative RPATH (or a
+proper install step) before a *packaged/distributed* Linux binary could carry `libwebrtc.so`
+across machines. Deferred — packaging is out of scope until there's a working feature to package.
 
 ## 2. What in `webrtc_stream.cpp` is actually Windows-only
 
@@ -254,9 +276,8 @@ as designed, not a bug or a gap.
 branch mirroring `try_push_nv12_frame`") doesn't exist as a task — there's no NV12 branch to
 write. This is a scoping correction, not a completed implementation: nothing has actually been
 observed carrying a frame to a browser yet. That proof is milestone 4's job (real capture threads
-spun up, real encoder probed, real packets flowing under a live browser session) and it still
-needs the `$ORIGIN` RPATH gap from §1b resolved first before a built binary can even load
-`libwebrtc.so` to try.
+spun up, real encoder probed, real packets flowing under a live browser session) — see §1b for why
+that no longer needs an RPATH fix first either.
 
 **Explicitly not doing**: deleting the dead `try_push_nv12_frame`/`try_push_d3d11_frame`/
 `video_source`/`raw_video_frames` scaffolding. It's shared Windows/macOS-path code, unrelated to
@@ -272,25 +293,30 @@ conflicts for no benefit to this effort.
    (not yet run end-to-end as a whole script), `linux.cmake`/`webrtc.cmake` wired and verified
    against a real project configure + a real compile of `webrtc_stream.cpp` with
    `SUNSHINE_ENABLE_WEBRTC=1`. Found and fixed a pre-existing `webrtc.cmake` caching bug along the
-   way that affected the Windows path too. Runtime linking (`$ORIGIN` RPATH) is still unresolved —
-   carried forward into milestone 4.
+   way that affected the Windows path too. Originally thought runtime linking (`$ORIGIN` RPATH)
+   was still unresolved here — retested in step 4's work and that turned out to be wrong too, see
+   §1b's 2026-07-29 retest.
 3. ~~**Frame delivery.**~~ **Turned out to be a no-op — done 2026-07-29** — see §2b. The originally
    assumed `#ifdef __linux__` NV12 branch doesn't need to exist: the raw-NV12 push path
    (`try_push_nv12_frame`/`video_source`) is dead code on every platform, and the path that's
    actually live (`submit_video_packet`, fed from the existing encoded-packet pipeline shared with
    RTSP) is already fully platform-agnostic. Verified by call-graph trace, not just a source read.
-   Not yet *proven at runtime* — that's milestone 4.
-4. **End-to-end smoke test.** `SUNSHINE_ENABLE_WEBRTC=ON` build, real browser session against
-   `/webrtc`, verify signaling/ICE/SDP negotiation (already cross-platform) actually gets frames
-   on screen. Needs the RPATH/runtime-linking gap from §1b resolved first. Bucket B items stay
-   `#ifdef _WIN32`-only / no-op on Linux at this stage. This is now the milestone carrying the only
-   remaining unproven claim: that the whole chain (capture threads spin up, encoder probes
-   succeed, `webrtc_capture.active` flips, packets flow, libwebrtc packages and ships them) does
-   what §2b's static trace says it should.
+4. **End-to-end smoke test — build/link/runtime-load prerequisites done 2026-07-29, browser
+   session itself not yet run.** Linked a full `sunshine` binary against the trial `libwebrtc.so`
+   in an isolated build dir with `SUNSHINE_ENABLE_WEBRTC=ON`: it built clean, and — reversing the
+   §1b "RPATH gap" claim — `readelf -d`/`ldd` show CMake's default build-tree RPATH behavior
+   already embeds a working `RUNPATH` to `libwebrtc.so` with no CMake changes needed, and
+   `./sunshine --version` actually ran and started logging config. No CMake/build work remains
+   blocking this milestone. What's left is purely the runtime claim: real capture threads spin up,
+   an encoder probes successfully, `webrtc_capture.active` flips, packets flow, and a real browser
+   at `/webrtc` actually negotiates SDP/ICE and renders video. Bucket B items stay
+   `#ifdef _WIN32`-only / no-op on Linux at this stage.
 5. **Opportunistic follow-up**, not blocking: once virtual-display and RTSS Linux ports land
    independently, revisit Bucket B call sites to wire them in for WebRTC sessions too.
 
 Steps 1–2 turned out to be the two biggest *build-side* unknowns and are resolved with working
-recipes; step 3 turned out not to need any code at all, which was itself only discoverable by
-tracing calls rather than reading `#ifdef` blocks. The RPATH gap and an actual browser smoke test
-(milestone 4) are what's left before any of this is real.
+recipes; step 3 turned out not to need any code at all; and step 4's build/link/RPATH
+prerequisites turned out to already work with zero CMake changes, each of these only discoverable
+by actually running the commands rather than reasoning from `#ifdef` blocks or a Windows mental
+model. The only thing left before any of this is real is an actual browser session against a
+running Linux build.

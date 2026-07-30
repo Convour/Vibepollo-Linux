@@ -36,9 +36,11 @@ end-user outcome. Status reflects live verification on real hardware, not just c
   yet exercised against a real EDID-injected output.
 * **WebRTC browser streaming (`/webrtc`).** 🔴 Not functional on Linux yet —
   `SUNSHINE_ENABLE_WEBRTC` is Windows-only by default. `libwebrtc` builds clean for Linux, CMake
-  wiring is in place, and `src/webrtc_stream.cpp` compiles as-is with `SUNSHINE_ENABLE_WEBRTC=1`
-  (`docs/linux/webrtc-linux-port-plan.md`); still needs runtime linking (`$ORIGIN` RPATH), the one
-  new Linux frame-delivery function, and an actual browser session test before this is real.
+  wiring is in place, `src/webrtc_stream.cpp` compiles as-is with `SUNSHINE_ENABLE_WEBRTC=1`, and
+  frame delivery turned out to need zero new code (the existing encoded-packet pipeline shared
+  with RTSP already reaches WebRTC sessions on Linux — traced, not yet run;
+  `docs/linux/webrtc-linux-port-plan.md`); still needs runtime linking (`$ORIGIN` RPATH) and an
+  actual browser session test before this is real.
 
 ## What is Vibepollo?
 

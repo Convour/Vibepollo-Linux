@@ -1,14 +1,14 @@
 # WebRTC browser streaming on Linux — scoping notes (2026-07-29, updated 2026-07-29)
 
-**Status: milestones 1 and 2 done.** `libwebrtc` builds clean for Linux, the CMake wiring finds
-and links it, and `src/webrtc_stream.cpp` compiles with `SUNSHINE_ENABLE_WEBRTC=1` on GCC/Linux
-with zero changes needed to that file. This started as a first-pass investigation into what
-porting `/webrtc` browser streaming to Linux would actually take, done after discovering the
-running dev service returns `Error: WebRTC: support is disabled at build time`
-(`src/webrtc_stream.cpp`) whenever a browser client posts an SDP offer, because
-`SUNSHINE_ENABLE_WEBRTC` is Windows-only and off by default (`cmake/prep/options.cmake:20`). What
-remains is frame delivery (milestone 3) and an actual browser smoke test (milestone 4) — see
-"Rough milestone plan".
+**Status: milestones 1 and 2 done; milestone 3's premise turned out to be wrong (see §2b) — no
+new frame-delivery code needed.** `libwebrtc` builds clean for Linux, the CMake wiring finds and
+links it, and `src/webrtc_stream.cpp` compiles with `SUNSHINE_ENABLE_WEBRTC=1` on GCC/Linux with
+zero changes needed to that file. This started as a first-pass investigation into what porting
+`/webrtc` browser streaming to Linux would actually take, done after discovering the running dev
+service returns `Error: WebRTC: support is disabled at build time` (`src/webrtc_stream.cpp`)
+whenever a browser client posts an SDP offer, because `SUNSHINE_ENABLE_WEBRTC` is Windows-only and
+off by default (`cmake/prep/options.cmake:20`). What remains is an actual browser smoke test
+(milestone 4), still blocked on the `$ORIGIN` RPATH gap from §1b — see "Rough milestone plan".
 
 **Headline finding: this is smaller than it looks at first glance.** `src/webrtc_stream.cpp` is
 ~5,940 lines and greps for D3D11/DXGI/COM look alarming, but the file already gates every
@@ -198,6 +198,71 @@ None of Bucket B needs to be solved for a first working Linux WebRTC session —
 `#ifdef __linux__`-noop the same way it's currently just absent for non-Windows builds elsewhere,
 and pick up real wiring later as the virtual-display and RTSS Linux ports land independently.
 
+## 2b. Bucket A was wrong: the NV12 push path is dead code on every platform (2026-07-29)
+
+§2's Bucket A analysis assumed `try_push_nv12_frame`/`try_push_d3d11_frame` (the raw-NV12
+`lwrtc_video_source_push_nv12` path) are the live video-delivery mechanism and that Linux needs an
+`#ifdef __linux__` branch alongside them. That assumption came from reading the source, not from
+tracing the call graph — it's wrong. Verified by grep across all of `src/`:
+
+- `lwrtc_video_source_create` (the thing that would produce the `lwrtc_video_source_t*` these
+  functions push into) is **never called anywhere**. `session.video_source` is declared
+  (`webrtc_stream.cpp:1722`) but never assigned.
+- `try_push_nv12_frame` and `try_push_d3d11_frame` are **never called anywhere** — only defined
+  (`webrtc_stream.cpp:3655`, `:4236`; the latter is already marked `[[maybe_unused]]` in the
+  source itself, which in hindsight was the tell).
+- `submit_video_frame()` (`webrtc_stream.cpp:5509`), the only thing that pushes into
+  `session.raw_video_frames`, has **zero callers** anywhere in the codebase, and
+  `raw_video_frames` is never drained/popped anywhere either (only pushed).
+
+This whole raw-NV12/`video_source` path — on Windows and macOS too, not just Linux — is unfinished
+scaffolding for a design (hand libwebrtc raw frames and let it run its own internal encoder) that
+was superseded before it was wired up. It is **not part of the current architecture** and is left
+in place (not deleted — it's shared Windows/macOS-adjacent code and out of this port's scope; see
+below).
+
+**What's actually live**: `webrtc_stream::submit_video_packet(video::packet_raw_t&)`
+(`webrtc_stream.cpp:5406`), fed from `src/video.cpp`'s three encoder-result call sites
+(`encode_avcodec:2675`, `encode_nvenc:2710`, `deliver_amf_frames:2748` — none of these three call
+sites are platform-gated). This is the exact same already-encoded byte stream the classic RTSP
+path consumes, pushed into a `session.video_frames` ring buffer of `EncodedVideoFrame` and later
+handed to libwebrtc as pre-encoded H264/HEVC via `lwrtc_encoded_video_source_push_shared`
+(`webrtc_stream.cpp:4758`). Nothing in `submit_video_packet` or the `EncodedVideoFrame` struct is
+platform-specific — codec/keyframe/timestamp handling is all generic (`packet.is_idr()`,
+`packet.frame_index()`, raw byte payload). Since Linux's VAAPI/software encode already flows
+through `encode_avcodec` and Linux NVENC through `encode_nvenc` — the same functions RTSP already
+depends on — **this feed already reaches WebRTC sessions on Linux with no new code**.
+
+Traced the other half of the question too: whether Linux control flow actually reaches the point
+that starts the capture/encode threads and flips the gate `submit_video_packet` checks
+(`webrtc_capture.active`, `webrtc_stream.cpp:5411`). Read `start_webrtc_capture()`
+(`webrtc_stream.cpp:2936-3165`) end to end — the `#ifdef _WIN32` blocks inside it without a
+matching `#else` (lines 3034, 3074, 3147) are all *additive* Windows-only extras (output-override
+lease bookkeeping, virtual-display prep, display-helper coordination — Bucket B, already tracked
+separately), not gates that block reaching `webrtc_capture.active.store(true, ...)` or the
+`video_thread`/`audio_thread` spawn a few lines later at `:3160-3165`. The one non-Windows
+early-return in that function (`:3132-3134`, no virtual-display retry-and-reprobe on failure) only
+fires if `video::probe_encoders()` itself fails — the same failure mode RTSP already has on a
+headless/no-display Linux box, not a WebRTC-specific gap. `channel_data` gating also checked: the
+WebRTC capture thread calls `video::capture(mail, video_config, nullptr)` (`:3163`, `channel_data
+= nullptr`), so `submit_video_packet`'s `packet.channel_data != nullptr` early-return
+(`:5411`) correctly *admits* WebRTC-originated packets and rejects RTSP-originated ones (which
+carry a real per-client `channel_data`) — this is the intended routing mechanism, working exactly
+as designed, not a bug or a gap.
+
+**Net effect on the milestone plan**: milestone 3 as originally scoped ("new `#ifdef __linux__`
+branch mirroring `try_push_nv12_frame`") doesn't exist as a task — there's no NV12 branch to
+write. This is a scoping correction, not a completed implementation: nothing has actually been
+observed carrying a frame to a browser yet. That proof is milestone 4's job (real capture threads
+spun up, real encoder probed, real packets flowing under a live browser session) and it still
+needs the `$ORIGIN` RPATH gap from §1b resolved first before a built binary can even load
+`libwebrtc.so` to try.
+
+**Explicitly not doing**: deleting the dead `try_push_nv12_frame`/`try_push_d3d11_frame`/
+`video_source`/`raw_video_frames` scaffolding. It's shared Windows/macOS-path code, unrelated to
+what this fork's Linux port needs to touch, and removing it would just create upstream merge
+conflicts for no benefit to this effort.
+
 ## 3. Rough milestone plan
 
 1. ~~**Prove the dependency builds.**~~ **Done 2026-07-29** — see §1. `libwebrtc.so` builds clean
@@ -209,16 +274,23 @@ and pick up real wiring later as the virtual-display and RTSS Linux ports land i
    `SUNSHINE_ENABLE_WEBRTC=1`. Found and fixed a pre-existing `webrtc.cmake` caching bug along the
    way that affected the Windows path too. Runtime linking (`$ORIGIN` RPATH) is still unresolved —
    carried forward into milestone 4.
-3. **Frame delivery.** New `#ifdef __linux__` branch in `webrtc_stream.cpp` mirroring
-   `try_push_nv12_frame`, sourcing from the existing `graphics.cpp` NV12 pipeline. This is the
-   only genuinely new C++ logic the port needs.
+3. ~~**Frame delivery.**~~ **Turned out to be a no-op — done 2026-07-29** — see §2b. The originally
+   assumed `#ifdef __linux__` NV12 branch doesn't need to exist: the raw-NV12 push path
+   (`try_push_nv12_frame`/`video_source`) is dead code on every platform, and the path that's
+   actually live (`submit_video_packet`, fed from the existing encoded-packet pipeline shared with
+   RTSP) is already fully platform-agnostic. Verified by call-graph trace, not just a source read.
+   Not yet *proven at runtime* — that's milestone 4.
 4. **End-to-end smoke test.** `SUNSHINE_ENABLE_WEBRTC=ON` build, real browser session against
    `/webrtc`, verify signaling/ICE/SDP negotiation (already cross-platform) actually gets frames
    on screen. Needs the RPATH/runtime-linking gap from §1b resolved first. Bucket B items stay
-   `#ifdef _WIN32`-only / no-op on Linux at this stage.
+   `#ifdef _WIN32`-only / no-op on Linux at this stage. This is now the milestone carrying the only
+   remaining unproven claim: that the whole chain (capture threads spin up, encoder probes
+   succeed, `webrtc_capture.active` flips, packets flow, libwebrtc packages and ships them) does
+   what §2b's static trace says it should.
 5. **Opportunistic follow-up**, not blocking: once virtual-display and RTSS Linux ports land
    independently, revisit Bucket B call sites to wire them in for WebRTC sessions too.
 
-Steps 1–2 turned out to be the two biggest unknowns, and both are now resolved with working
-recipes; step 3 (the NV12 GPU→host readback) is next and is where the remaining size/complexity
-uncertainty actually lives now.
+Steps 1–2 turned out to be the two biggest *build-side* unknowns and are resolved with working
+recipes; step 3 turned out not to need any code at all, which was itself only discoverable by
+tracing calls rather than reading `#ifdef` blocks. The RPATH gap and an actual browser smoke test
+(milestone 4) are what's left before any of this is real.

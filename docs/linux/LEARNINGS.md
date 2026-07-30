@@ -1096,3 +1096,26 @@ not just the client's own behavior:
   forward-killed the game's process group(s) (game process died); the launcher exited right after.
 - **Steam client survived both tests untouched** (same PID throughout) — confirming the
   client-process-group exclusion logic works correctly and doesn't take Steam itself down.
+
+## 26. Open Issue: Virtual Audio Sink Not Cleaned Up After Stream End (2026-07-29)
+
+**Status: not investigated yet — logged here to come back to.**
+
+Observed live: after a streaming session ended, the `virtual_sink` Sunshine creates for the
+session (`src/platform/linux/audio.cpp`, see §20 — `virtual_sink` vs `audio_sink`) did not get
+removed and the system default output was not restored to the physical device automatically.
+`pactl list sinks short` kept showing the sunshine-created sink as present/default after the
+session ended, requiring manually switching the default audio output back in system settings.
+
+Per §20, `virtual_sink` is documented as: "Sunshine creates the virtual null-sink, sets it as
+system default, captures from its monitor, and restores host audio on disconnect" — the restore
+half of that contract did not hold in this instance. Not yet root-caused: could be a normal
+session-end path that isn't reached (e.g. same class of bug as the Steam quit-detection issue in
+§25, if Sunshine doesn't consider the session cleanly "ended"), or a genuine gap in the audio
+sink teardown logic itself (`src/platform/linux/audio.cpp`) parallel to the virtual-display
+crash-recovery gap tracked in `virtual_display_cleanup.cpp` for the display side.
+
+**To reproduce/investigate next time:** check whether the audio teardown path runs at all on
+session end (add logging or check journal around `audio.cpp`'s sink-destroy call), and whether
+this correlates with *how* the stream ended (client disconnect vs. in-game quit vs. crash) the
+same way §25's bug only manifested for one specific termination path.

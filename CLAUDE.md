@@ -160,3 +160,23 @@ to serve a Linux backend without changes).
 
 **Session history / host stats**: `src/session_history*.cpp` (recorded per-session stats),
 `src/host_stats.cpp` (live CPU/GPU/mem sampling) — both feed the web UI's Stats view.
+
+## This workspace
+
+This repo lives in `~/Projects/`, alongside ~13 other independent personal
+projects — see [`~/Projects/CLAUDE.md`](../CLAUDE.md) for the full index.
+Related repos:
+
+- [`~/Projects/game-streaming-wolf-sunshine-setup`](../game-streaming-wolf-sunshine-setup/CLAUDE.md)
+  and [`~/Projects/GameStreaming-Restore`](../GameStreaming-Restore/CLAUDE.md)
+  — the pre-existing native-Sunshine/Wolf dual setup on this same machine and
+  its recovery history. This fork is the actively-developed longer-term
+  replacement path for the Sunshine half of that setup, not a from-scratch
+  reinvention — check those repos before re-solving something (port
+  allocation, DualSense controller override) they already solved.
+- [`~/Projects/Moonlight-TCL`](../Moonlight-TCL/CLAUDE.md) — client-side
+  research for the same GameStream target (concluded infeasible on that
+  specific TV; recommends a companion-device client instead).
+- [`~/Projects/MyCachyOS`](../MyCachyOS/CLAUDE.md) — this machine's
+  hardware/software spec archive (Arch/CachyOS + NVIDIA + KDE Plasma/Wayland,
+  the exact target this fork's Linux build path is validated against).
